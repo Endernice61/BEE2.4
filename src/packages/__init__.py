@@ -125,6 +125,13 @@ TRANS_DUPLICATE_OBJ_ID = TransToken.untranslated(
 )
 TRANS_CORR_OPTS = TransToken.ui_plural('{n} option', '{n} options')  # i18n: Corridor options count
 TRANS_MISSING_ITEM_DESC = TransToken.ui('The object {id} is missing from loaded packages. Exporting it will fail.')
+TRANS_MIGRATION_SELF = TransToken.untranslated('The {obj_type} {id} is set to migrate to itself.')
+TRANS_MIGRATION_EXISTS = TransToken.untranslated(
+    'The {obj_type} {old} exists, but has a migration defined ({new}). This entry will be ignored.'
+)
+TRANS_MIGRATION_CONFLICT = TransToken.untranslated(
+    'The {obj_type} {old} is set to migrate to {new1} and {new2}. This should be reconciled.'
+)
 
 
 @utils.freeze_enum_props
@@ -406,24 +413,13 @@ class PackErrorInfo:
     packset: PackagesSet = attrs.field(repr=lambda pack: f'<PackagesSet @ {id(pack):x}>')
     errors: ErrorUI
 
-    def use_dev_warnings(self, package: utils.SpecialID) -> bool:
-        """Check if the specified package is a developer package."""
-        if DEV_MODE.value:
-            return True
-        try:
-            # If it's a special ID, this will fail to find, so we can cast.
-            return self.packset.packages[utils.ObjectID(package)].is_dev()
-        except KeyError:
-            LOGGER.warning('Trying to warn about package "{}" which does not exist?', package)
-            return True  # Missing, warn about it?
-
     def warn(self, warning: AppError | TransToken) -> None:
         """Emit a non-fatal warning, shortcut for errors.add()."""
         self.errors.add(warning)
 
     def warn_auth(self, package: utils.SpecialID, warning: AppError | TransToken, /) -> None:
         """If the specified package is a developer package, emit a warning."""
-        if self.use_dev_warnings(package):
+        if self.packset.use_dev_warnings(package):
             self.errors.add(warning)
         else:  # Write it to the log.
             if isinstance(warning, AppError):
@@ -435,7 +431,7 @@ class PackErrorInfo:
         if not isinstance(warning, AppError):
             warning = AppError(warning)
         warning.fatal = True
-        if self.use_dev_warnings(package):
+        if self.packset.use_dev_warnings(package):
             self.errors.add(warning)
         else:  # Write it to the log.
             if isinstance(warning, AppError):
@@ -566,6 +562,12 @@ class PakObject:
         """
         raise NotImplementedError
 
+    def _parse_migrations(self, data: ParseData) -> None:
+        """Parse out standard migrations data."""
+        for kv in data.info.find_all('migration'):
+            old_id = PakRef.parse(type(self), kv.value)
+            data.packset.add_migration(data, data.pak_id, old_id, self)
+
     def add_over(self, override: Self) -> None:
         """Called to override values.
         self is the originally defined item, and override is the override item
@@ -593,6 +595,7 @@ class PakObject:
 
 class SelPakObject(PakObject):
     """Defines PakObjects which have SelItemData."""
+    # The key used in style objects to define suggested items for this object type.
     suggest_default: ClassVar[str]
 
     selitem_data: SelitemData
@@ -790,7 +793,11 @@ class PackagesSet:
     # The templates found in the packages. This maps an ID to the file.
     templates: dict[str, utils.PackagePath] = attrs.field(init=False, factory=dict)
 
-    item_migrations: dict[PakRef[Item] | SubItemRef, SubItemRef] = attrs.field(init=False, factory=dict)
+    # Maps old names to the current replacement. Each pair should be the same object type.
+    # Value is set to None if conflicting migrations exist - this key is ignored.
+    # This is not used for Items, which have subtypes to contend with. That uses a dict weakly keyed
+    # on packsets.
+    _migrations: dict[PakRef, PakRef | None] = attrs.field(init=False, factory=dict)
 
     # Indicates if an object type has been fully parsed.
     _type_ready: dict[type[PakObject], trio.Event] = attrs.field(init=False, factory=dict)
@@ -829,6 +836,17 @@ class PackagesSet:
     def has_tag_music(self) -> bool:
         """Have we found Aperture Tag?"""
         return self.tag_music_fsys is not None
+
+    def use_dev_warnings(self, package: utils.SpecialID) -> bool:
+        """Check if the specified package is a developer package."""
+        if DEV_MODE.value:
+            return True
+        try:
+            # If it's a special ID, this will fail to find, so we can cast.
+            return self.packages[utils.ObjectID(package)].is_dev()
+        except KeyError:
+            LOGGER.warning('Trying to warn about package "{}" which does not exist?', package)
+            return True  # Missing, warn about it?
 
     def ready(self, cls: type[PakObject]) -> trio.Event:
         """Return a Trio Event which is set when a specific object type is fully parsed."""
@@ -894,6 +912,66 @@ class PackagesSet:
         for cls in OBJ_TYPES.values():
             conf = await cls.migrate_config(self, conf)
         return conf
+
+    def add_migration[PakT: PakObject](
+        self, errors: PackErrorInfo, pak_id: utils.SpecialID, old_ref: PakRef[PakT], new: PakT,
+    ) -> None:
+        """Set this old ID to migrate to the new object, raising errors if overlapping."""
+        new_ref = new.reference()
+        if old_ref.obj is not new_ref.obj:
+            # Code did something wrong.
+            raise AssertionError(f'Tried to migrate mismatching {old_ref} -> {new_ref}!')
+        if old_ref == new_ref:
+            # Useless match, but harmless.
+            errors.warn_auth(pak_id, TRANS_MIGRATION_SELF.format(obj_type=type(new).__name__, id=old_ref.id))
+            return
+        try:
+            exist = self._migrations[old_ref]
+        except KeyError:
+            LOGGER.debug('Migration: {} -> {}', old_ref, new_ref)
+            self._migrations[old_ref] = new_ref
+        else:
+            if new_ref != exist:
+                # Divergent migrations. Warn the author, mark as invalid.
+                try:  # Need to check which packages these exist in.
+                    new_obj = new_ref.resolve(self)
+                    exist_obj = exist.resolve(self)
+                except KeyError as exc:  # Added but somehow missing now? Just error out.
+                    raise ValueError(f'Conflicting migration: {old_ref} -> {exist} & {new_ref}') from exc
+                if self.use_dev_warnings(new_obj.pak_id) or self.use_dev_warnings(exist_obj.pak_id):
+                    errors.warn(TRANS_MIGRATION_CONFLICT.format(
+                        obj_type=type(new).__name__,
+                        old=old_ref.id,
+                        new1=new_ref.id, new2=exist.id,
+                    ))
+
+    def verify_migrations(self, errors: ErrorUI) -> None:
+        """Validate migrations, removing any that try to migrate objects that do exist."""
+        LOGGER.info('Validating migrations..')
+        refs = list(self._migrations)
+        real: PakObject
+        for old in refs:
+            try:
+                real = self.obj_by_id(old.obj, old.id, warn=False)
+            except KeyError:
+                pass
+            else:
+                new = self._migrations.pop(old)
+                if self.use_dev_warnings(real.pak_id):
+                    errors.add(TRANS_MIGRATION_EXISTS.format(
+                        obj_type=old.obj.__name__,
+                        old=old.id, new=new,
+                    ))
+
+    def get_migration[PakT: PakObject](self, ref: PakRef[PakT]) -> PakRef[PakT]:
+        """Try to migrate the specified reference, returning it unchanged if none exists."""
+        result = self._migrations.get(ref, ref)
+        if result is None:
+            LOGGER.warning('Conflicting migration for {}', ref)
+            return ref
+        if result is not ref:
+            LOGGER.info('Migrating {} -> {}', ref, result)
+        return result
 
 
 def get_loaded_packages() -> PackagesSet:
@@ -1538,7 +1616,7 @@ class Style(SelPakObject, needs_foreground=True):
                 source=f'Style <{data.id}>',
             )
 
-        return cls(
+        style = cls(
             style_id=data.id,
             selitem_data=selitem_data,
             items=items,
@@ -1550,6 +1628,8 @@ class Style(SelPakObject, needs_foreground=True):
             legacy_corridors=legacy_corridors,
             vpk_name=vpk_name,
         )
+        style._parse_migrations(data)
+        return style
 
     def add_over(self, override: Style) -> None:
         """Add the additional commands to ourselves."""
@@ -1688,7 +1768,7 @@ from .barrier_hole import BarrierHole
 from .corridor import CorridorGroup
 from .editor_sound import EditorSound
 from .elevator import Elevator
-from .item import Item, SubItemRef
+from .item import Item
 from .music import Music
 from .pack_list import PackList
 from .player import PlayerModel

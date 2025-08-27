@@ -10,13 +10,13 @@ otherwise.
 """
 import abc
 import os
+import shutil
 import sys
 import logging
 import math
 from collections.abc import Awaitable, Callable
 from contextlib import ExitStack, aclosing
 from pathlib import Path, PurePath
-from typing import List
 
 from srctools import logger
 from srctools.filesys import RawFileSystem
@@ -272,10 +272,6 @@ async def main_gui(
     ui.packages = list(packset.packages.values())
     core_nursery.start_soon(ui.pack_btn_task)
 
-    package_loc = Path('../..', GEN_OPTS['Directories']['package']).resolve()
-
-    file_list: List[Path] = []
-
     exp_file_send, exp_file_rec = trio.open_memory_channel[trio.Path](1)
     transfer_send, transfer_rec = trio.open_memory_channel[tuple[trio.Path, trio.Path]](1)
 
@@ -283,6 +279,7 @@ async def main_gui(
     core_nursery.start_soon(check_file_task, packset, ui, portal2_loc, exp_file_rec, transfer_send)
 
     enable_confirm = trio.Event()
+
     async def delay_enable() -> None:
         """Disable the confirm button briefly whenever a file arrives.
 
@@ -302,8 +299,10 @@ async def main_gui(
                 # Not triggered, re-enable.
                 ui.can_confirm.value = True
 
-    def demo_copy(src: object, dest: object) -> None:
+    def do_copy(src: trio.Path, dest: trio.Path) -> None:
         print(f'Copy {src} -> {dest}')
+        with open(src, 'rb') as sf, open(dest, 'wb') as df:
+            shutil.copyfileobj(sf, df)
 
     core_nursery.start_soon(delay_enable)
 
@@ -325,7 +324,7 @@ async def main_gui(
                 for suffix in MDL_EXTS:
                     try:
                         await trio.to_thread.run_sync(
-                            demo_copy,
+                            do_copy,
                             src.with_suffix(suffix),
                             dest.with_suffix(suffix),
                         )
@@ -333,7 +332,7 @@ async def main_gui(
                         pass
             else:
                 await trio.to_thread.run_sync(
-                    demo_copy,
+                    do_copy,
                     src, dest,
                 )
 
@@ -346,7 +345,7 @@ async def communicate(stack: ExitStack, files: list[str]) -> bool:
             # First, try to open the mutex file. If we succeed, we're definitely the server.
             try:
                 # TODO: use os.O_TEMPORARY?
-                stack.enter_context(open(FILE_MUTEX, 'x'))
+                stack.enter_context(open(FILE_MUTEX, 'xb'))
                 return False  # We're the server.
             except FileExistsError:
                 # It exists, try to delete - will fail if still alive.
@@ -357,7 +356,7 @@ async def communicate(stack: ExitStack, files: list[str]) -> bool:
                     try:
                         port = int(FILE_SERVER.read_text())
                         stream = await trio.open_tcp_stream('localhost', port)
-                    except (IOError, OSError, ValueError):
+                    except (OSError, ValueError):
                         # Might be starting up, try again
                         await trio.sleep(0.1)
                     else:
@@ -406,7 +405,6 @@ async def start_server(ui: SyncUIBase, core_nursery: trio.Nursery, files: list[s
     """Start our server, then process in the GUI."""
     async def listen(nursery: trio.Nursery, listener: trio.SocketListener) -> None:
         """Listen to our open socket for messages."""
-        buf = bytearray()
         while True:
             stream = await listener.accept()
             nursery.start_soon(pump_stream, stream)

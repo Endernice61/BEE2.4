@@ -1,20 +1,24 @@
 """Implement cubes and droppers."""
 from __future__ import annotations
+
 from typing import NamedTuple, Literal, assert_never
 
 from collections.abc import MutableMapping
 from collections import defaultdict
 from contextlib import suppress
 from weakref import WeakKeyDictionary
+import itertools
 
 from enum import Enum
 
 from srctools.vmf import VMF, Entity, EntityFixup, Output
+from srctools.geometry import Geometry, Polygon
 from srctools import EmptyMapping, FrozenVec, Keyvalues, Vec, Matrix, Angle
 import srctools.logger
 import attrs
 
-from precomp import brushLoc, options, packing, conditions, connections
+import consts
+from precomp import brushLoc, options, packing, conditions, connections, template_brush
 from precomp.collisions import Collisions, CollideType
 from precomp.conditions.globals import precache_model
 from precomp.instanceLocs import resolve as resolve_inst, resolve_filter
@@ -78,6 +82,13 @@ CUBE_ID_CUSTOM_MODEL_HACK = '6'
 # In coop, the viewmodel grabbing behaviour allows you to pull cubes through anything
 # if you can pick them up. So optionally add a VScript to deny USE if grating is in the way.
 COOP_CUBE_VSCRIPT = 'bee2/coop_block_grate_grab'
+
+# If no carve volume is supplied, use a bbox this large.
+DEFAULT_CUBE_CARVE = 48.0
+DEFAULT_CUBE_CARVE_VERTS = [frozenset({
+    FrozenVec(xyz)
+    for xyz in itertools.product([-DEFAULT_CUBE_CARVE/2, DEFAULT_CUBE_CARVE/2], repeat=3)
+})]
 
 
 class CubeEntType(Enum):
@@ -327,41 +338,30 @@ class CubeAddon:
         return fixups if found else None
 
 
+@attrs.define(eq=False, kw_only=True)
 class DropperType:
     """A type of dropper that makes cubes."""
-    def __init__(
-        self,
-        drop_id: str,
-        item_id: str,
-        cube_pos: Vec,
-        cube_orient: Angle,
-        out_start_drop: tuple[str | None, str],
-        out_finish_drop: tuple[str | None, str],
-        in_respawn: tuple[str | None, str],
-        filter_name: str,
-        bounce_paint_file: str,
-    ) -> None:
-        self.id = drop_id
-        self.instances = resolve_inst(item_id)
-        self.cube_pos = cube_pos
-        # Orientation of the cube.
-        self.cube_orient = cube_orient
+    id: str
+    instances: list[str]
+    # Where the cube should spawn.
+    cube_pos: FrozenVec
+    cube_orient: Angle
 
-        # Instance output fired when finishing dropping. !activator
-        # should be the cube!
-        self.out_finish_drop = out_finish_drop
-
-        # Instance output fired when dropper starts spawning.
-        self.out_start_drop = out_start_drop
-
-        # Instance input to respawn the cube.
-        self.in_respawn = in_respawn
-
-        # Name of the filter which detects only the cube, used to link up superpos logic.
-        self.filter_name = filter_name
-
-        # The instance to use to bounce-paint the dropped cube.
-        self.bounce_paint_file = bounce_paint_file
+    # Instance output fired when dropper starts spawning.
+    out_start_drop: tuple[str | None, str]
+    # Instance output fired when finishing dropping. !activator
+    # should be the cube!
+    out_finish_drop: tuple[str | None, str]
+    # Instance input to respawn the cube.
+    in_respawn: tuple[str | None, str]
+    # Name of the filter which detects only the cube, used to link up superpos logic.
+    filter_name: str
+    # The instance to use to bounce-paint the dropped cube.
+    bounce_paint_file: str
+    # Template used for the carved clip brush.
+    clip_template: LazyValue[str]
+    # The points where the cube brush is placed to carve from.
+    clip_points: list[FrozenVec]
 
     @classmethod
     def parse(cls, conf: Keyvalues) -> DropperType:
@@ -385,23 +385,34 @@ class DropperType:
         else:
             cube_orient = Angle()
 
+        item_id = conf['itemid', '']
+        instances = resolve_inst(item_id) if item_id else []
+
         return cls(
-            drop_id=conf['id'].upper(),
-            item_id=conf['itemid'],
-            cube_pos=conf.vec('cube_pos'),
+            id=conf['id'].upper(),
+            instances=instances,
+            cube_pos=conf.vec('cube_pos').freeze(),
             cube_orient=cube_orient,
             out_start_drop=Output.parse_name(conf['OutStartDrop']),
             out_finish_drop=Output.parse_name(conf['OutFinishDrop']),
             in_respawn=Output.parse_name(conf['InputRespawn']),
             bounce_paint_file=conf['BluePaintInst', ''],
             filter_name=conf['filtername', 'filter'],
+            clip_template=LazyValue.parse(conf['clip', '']),
+            clip_points=[
+                FrozenVec.from_str(kv.value)
+                for kv in conf.find_all('clip_point')
+            ]
         )
 
 
 class CubeType:
     """A type of cube that can be spawned from droppers."""
+    clip_carve: list[frozenset[FrozenVec]] | str | None
+
     def __init__(
         self,
+        *,
         cube_id: str,
         cube_type: CubeEntType,
         has_name: str,
@@ -418,6 +429,7 @@ class CubeType:
         base_tint: Vec,
         overlay_addon: CubeAddon | None,
         overlay_think: str | None,
+        clip_carve: str | None,
     ) -> None:
         self.id = cube_id
         self.instances = resolve_inst(cube_item_id)
@@ -465,6 +477,9 @@ class CubeType:
         self.in_map = False
         # Same for colorized version.
         self.color_in_map = False
+        # Template used to carve clip brushes. Once first loaded,
+        # replaced by a set of points for each brush which is all we need.
+        self.clip_carve = clip_carve
 
     @classmethod
     def parse(cls: type[CubeType], conf: Keyvalues) -> CubeType:
@@ -528,22 +543,23 @@ class CubeType:
             cust_model_superpos_ghost = conf['modelSuperpos', None]
 
         return cls(
-            cube_id,
-            cube_type,
-            conf['hasName'],
-            cube_item_id,
-            cube_type is CubeEntType.comp or conf.bool('isCompanion'),
-            conf.bool('tryRusty'),
-            cust_model,
-            cust_model_color,
-            cust_model_superpos_ghost,
-            model_swap_meth,
-            packlist,
-            packlist_color,
-            conf.float('offset', 20),
-            conf.vec('baseTint', 255, 255, 255),
-            CubeAddon.base_parse(cube_id, conf),
-            conf['thinkFunc', None],
+            cube_id=cube_id,
+            cube_type=cube_type,
+            has_name=conf['hasName'],
+            cube_item_id=cube_item_id,
+            is_companion=cube_type is CubeEntType.comp or conf.bool('isCompanion'),
+            try_rusty=conf.bool('tryRusty'),
+            model=cust_model,
+            model_color=cust_model_color,
+            model_superpos_ghost=cust_model_superpos_ghost,
+            model_swap_meth=model_swap_meth,
+            pack=packlist,
+            pack_color=packlist_color,
+            base_offset=conf.float('offset', 20),
+            base_tint=conf.vec('baseTint', 255, 255, 255),
+            overlay_addon=CubeAddon.base_parse(cube_id, conf),
+            overlay_think=conf['thinkFunc', None],
+            clip_carve=conf['clip_carve', None],
         )
 
     def add_models(self, models: dict[str, str]) -> None:
@@ -583,6 +599,10 @@ class CubePair:
         self.drop_type = drop_type
         self.dropper = dropper
 
+        # The default cube dropper has inverted respawn/autodrop fixups.
+        # Cache this so if the dropper ID is changed later, this gets preserved.
+        self.is_default_dropper = drop_type is not None and drop_type.id == VALVE_DROPPER_ID
+
         # Fixup values from the cube's instance.
         if cube_fixup is None:
             if cube is not None:
@@ -609,7 +629,7 @@ class CubePair:
         if drop_type is not None:
             self.spawn_offset = drop_type.cube_pos
         else:
-            self.spawn_offset = Vec()
+            self.spawn_offset = FrozenVec()
 
         # Addons to attach to the cubes.
         self.addons: list[tuple[CubeAddon, EntityFixup]] = []
@@ -1096,7 +1116,7 @@ def res_dropper_addon(inst: Entity, res: Keyvalues) -> None:
 )
 def res_set_dropper_off(res: Keyvalues) -> conditions.ResultCallable:
     """Update the position cubes will be spawned at for a dropper."""
-    offset = LazyValue.parse(res.value).as_vec()
+    offset: LazyValue[FrozenVec] = LazyValue.parse(res.value).as_vec().map(Vec.freeze)
 
     def apply_offset(inst: Entity) -> None:
         """Change the position."""
@@ -1133,6 +1153,34 @@ def res_change_cube_type(inst: Entity, res: Keyvalues) -> None:
             kind='CubeType',
             id=res.value,
         )) from None
+
+
+@conditions.make_result(
+    'ChangeDropperType', 'SetDropperType',
+    valid_before=conditions.MetaCond.GenerateCubes,
+    valid_after=conditions.MetaCond.LinkCubes,
+)
+def res_change_dropper_type(inst: Entity, res: Keyvalues) -> None:
+    """Change the cube-type of a cube item.
+
+    This is only valid on `ITEM_BOX_DROPPER` for now.
+    """
+    try:
+        pair = INST_TO_PAIR[inst]
+    except KeyError:
+        LOGGER.warning('Attempting to set cube type on non cube ("{}")', inst['targetname'])
+        return
+
+    try:
+        pair.drop_type = DROPPER_TYPES[res.value]
+    except KeyError:
+        raise user_errors.UserError(user_errors.TOK_UNKNOWN_ID.format(
+            kind='DropperType',
+            id=res.value,
+        )) from None
+    else:
+        if pair.drop_type.cube_pos:
+            pair.spawn_offset = pair.drop_type.cube_pos
 
 
 @conditions.make_result(
@@ -1233,18 +1281,31 @@ def link_cubes(vmf: VMF, info: conditions.MapInfo) -> None:
     will have been removed.
     """
     # cube or dropper -> cubetype or droppertype value.
-    inst_to_cube: dict[str, CubeType] = {
-        fname.casefold(): cube_type
-        for cube_type in CUBE_TYPES.values()
-        for fname in cube_type.instances
-        if fname
-    }
-    inst_to_drop: dict[str, DropperType] = {
-        fname.casefold(): drop_type
-        for drop_type in DROPPER_TYPES.values()
-        for fname in drop_type.instances
-        if fname
-    }
+    inst_to_cube: dict[str, CubeType] = {}
+    inst_to_drop: dict[str, DropperType] = {}
+    for cube_type in CUBE_TYPES.values():
+        for fname in cube_type.instances:
+            if not fname:
+                continue
+            fname = fname.casefold()
+            if fname in inst_to_drop:
+                raise ValueError(
+                    f'Instance "{fname}" assigned to multiple dropper types: '
+                    f'{cube_type.id} & {inst_to_cube[fname].id}'
+                )
+            inst_to_cube[fname] = cube_type
+
+    for drop_type in DROPPER_TYPES.values():
+        for fname in drop_type.instances:
+            if not fname:
+                continue
+            fname = fname.casefold()
+            if fname in inst_to_drop:
+                raise ValueError(
+                    f'Instance "{fname}" assigned to multiple dropper types: '
+                    f'{drop_type.id} & {inst_to_drop[fname].id}'
+                )
+            inst_to_drop[fname] = drop_type
 
     # Origin -> instances
     dropper_pos: dict[FrozenVec, tuple[Entity, DropperType]] = {}
@@ -1947,6 +2008,72 @@ def make_cube(
     return has_addon_inst, ent
 
 
+def place_clip(
+    vmf: VMF,
+    dropper: Entity, pair: CubePair,
+    drop_type: DropperType, drop_clip_id: str,
+) -> None:
+    """Generate and place the clip for dropper."""
+    origin = Vec.from_str(dropper['origin'])
+    orient = Matrix.from_angstr(dropper['angles'])
+    clip = template_brush.import_template(
+        vmf, drop_clip_id,
+        origin, orient,
+        add_to_map=False,
+    )
+
+    # Grab the cube geometry we need. This is a template, but once we've loaded it,
+    # just remember the vertices.
+    verts: list[frozenset[FrozenVec]]
+    match pair.cube_type.clip_carve:
+        case list() as verts:
+            pass  # Already parsed.
+        case str(temp_name):  # Not yet parsed.
+            temp_name, visgroups = template_brush.parse_temp_name(temp_name)
+            verts = vert_list = pair.cube_type.clip_carve = []
+            for brush in template_brush.get_template(temp_name).visgrouped_solids(visgroups):
+                geo = Geometry.from_brush(brush)
+                vert_list.append(frozenset({
+                    vert for poly in geo.polys for vert in poly.vertices
+                }))
+            del vert_list
+        case None:
+            LOGGER.warning(
+                'Cube type "{}" has no clip carve shape, assuming a {}^3 cube',
+                pair.cube_type.id, DEFAULT_CUBE_CARVE,
+            )
+            verts = pair.cube_type.clip_carve = DEFAULT_CUBE_CARVE_VERTS
+        case never:
+            assert_never(never)
+
+    clip_geo_world = [Geometry.from_brush(brush) for brush in clip.world]
+    if clip.detail is not None:
+        clip_geo_detail = [Geometry.from_brush(brush) for brush in clip.detail.solids]
+    else:
+        clip_geo_detail = []
+    cube_orient = drop_type.cube_orient
+    for off_pair in itertools.pairwise(drop_type.clip_points):
+        for shape in verts:
+            carve = Geometry.from_points([
+                (vert @ cube_orient + off) @ orient + origin
+                for off in off_pair
+                for vert in shape
+            ])
+            clip_geo_world = list(Geometry.raw_carve(clip_geo_world, carve))
+            clip_geo_detail = list(Geometry.raw_carve(clip_geo_detail, carve))
+    Geometry.unshare_faces(clip_geo_world)
+    Geometry.unshare_faces(clip_geo_detail)
+    vmf.add_brushes([
+        geo.rebuild(vmf, consts.Tools.INVISIBLE)
+        for geo in clip_geo_world
+    ])
+    if clip_geo_detail:
+        vmf.create_ent('func_detail').solids = [
+            geo.rebuild(vmf, consts.Tools.INVISIBLE)
+            for geo in clip_geo_detail
+        ]
+
+
 @conditions.MetaCond.GenerateCubes.register
 def generate_cubes(vmf: VMF, info: conditions.MapInfo, coll: Collisions) -> None:
     """Generates cube instances.
@@ -2048,7 +2175,7 @@ def generate_cubes(vmf: VMF, info: conditions.MapInfo, coll: Collisions) -> None
         if pair.dropper:
             assert pair.drop_type is not None, pair
             pos = Vec.from_str(pair.dropper['origin'])
-            pos += pair.spawn_offset @ Angle.from_str(pair.dropper['angles'])
+            pos += pair.spawn_offset.thaw() @ Angle.from_str(pair.dropper['angles'])
             has_addon, drop_cube = make_cube(vmf, pair, pos, True, bounce_in_map, speed_in_map, prevent_grate_use)
             cubes.append(drop_cube)
 
@@ -2057,6 +2184,9 @@ def generate_cubes(vmf: VMF, info: conditions.MapInfo, coll: Collisions) -> None
             drop_cube['targetname'] = conditions.local_name(
                 pair.dropper, 'box',
             )
+
+            if clip_temp := pair.drop_type.clip_template(pair.dropper):
+                place_clip(vmf, pair.dropper, pair, pair.drop_type, clip_temp)
 
             # Implement the outputs.
 
@@ -2157,7 +2287,8 @@ def generate_cubes(vmf: VMF, info: conditions.MapInfo, coll: Collisions) -> None
 
             # Add output to respawn the cube.
             should_respawn = pair.dropper.fixup.bool('$disable_autorespawn')
-            if pair.drop_type.id == VALVE_DROPPER_ID:
+            LOGGER.error('Dropper: {}, {}, default={}', pair, pair.drop_type, pair.is_default_dropper)
+            if pair.is_default_dropper:
                 # Valve's dropper makes these match the name (inverted to
                 # the checkboxes in the editor), but in custom items they
                 # match the checkboxes.
