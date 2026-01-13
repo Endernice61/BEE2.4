@@ -67,7 +67,7 @@ class MenuBar:
         parent.option_add('*tearOff', '0')
         if utils.MAC:
             # OS X has a special quit menu item.
-            parent.createcommand('tk::mac::Quit', quit_app)  # type: ignore[no-untyped-call]
+            parent.createcommand('tk::mac::Quit', quit_app)
 
         if utils.MAC:
             # Name is used to make this the special 'BEE2' menu item

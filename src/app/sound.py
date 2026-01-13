@@ -154,6 +154,7 @@ class PygletSound(NullSound):
     async def fx(self, sound: SoundName) -> None:
         """Play a sound effect, sleeping for the duration."""
         global sounds
+        snd: PygletSource | None
         if play_fx():
             try:
                 snd = self.sources[sound]
@@ -356,7 +357,7 @@ class SamplePlayer:
                     player = sound.play()
                     LOGGER.debug('Sound duration: {}={}', snd_path, sound.duration)
                     try:
-                        await trio.sleep(sound.duration + 0.1)
+                        await trio.sleep((sound.duration or 0.0) + 0.1)
                     finally:
                         player.delete()
                 LOGGER.debug('Queue completed successfully.')

@@ -803,7 +803,7 @@ class SelectorWinBase[ButtonT, WinT, GroupHeaderT: GroupHeaderBase](ReflowWindow
                 )
             else:
                 prefix = TRANS_DEV_ITEM_ID.format(item=item_id)
-        elif data.packages: # Just show the friendly names.
+        elif data.packages:  # Just show the friendly names.
             prefix = TRANS_PACKAGES.format(pack=TransToken.list_and(
                 map(self._packset.package_disp_name, data.packages),
                 sort=True

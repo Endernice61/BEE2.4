@@ -173,7 +173,7 @@ def add_tooltip(
     """
     DATA[targ_widget] = TooltipData(text, image, delay)
 
-    event_id = None  # The id of the enter event, so we can cancel it.
+    event_id: str | None = None  # The id of the enter event, so we can cancel it.
 
     # Only check for disabled widgets if the widget actually has a state,
     # and the user hasn't disabled the functionality

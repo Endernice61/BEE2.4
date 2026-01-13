@@ -1,6 +1,6 @@
 """Modify and inspect faith plates."""
 from srctools import Angle, Keyvalues, Entity, logger, Vec
-from precomp import faithplate, template_brush, conditions
+from precomp import faithplate, conditions
 from precomp.lazy_value import LazyValue
 
 

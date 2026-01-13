@@ -91,7 +91,7 @@ async def init_app(core_nursery: trio.Nursery) -> None:
 
             # If our window isn't actually visible, this is set to nonsense -
             # ignore those values.
-            if MAIN_WINDOW.IsActive() and (pos := MAIN_WINDOW.GetScreenPosition()).IsFullySpecified():
+            if MAIN_WINDOW.IsActive() and (pos := MAIN_WINDOW.GetScreenPosition()).IsFullySpecified():  # type: ignore[unreachable]
                 config.APP.store_conf(WindowState(x=pos.x, y=pos.y), 'main_window')
 
             try:

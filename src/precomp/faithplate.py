@@ -9,7 +9,7 @@ from typing import ClassVar, Literal
 import collections
 
 import attrs
-from srctools import Entity, FrozenVec, Matrix, Vec, VMF, Angle, conv_float, logger, conv_bool
+from srctools import Entity, FrozenVec, Matrix, Vec, VMF, Angle, conv_float, logger
 
 from precomp import tiling, brushLoc, instanceLocs, template_brush, conditions, options
 from precomp.corridor import Info
