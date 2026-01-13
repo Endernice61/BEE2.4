@@ -406,8 +406,12 @@ class Selector[IconT: Icon, OptionRowT: OptionRow, OpenButton](ReflowWindow, ABC
         """Display the specified corridor temporarily on hover."""
         try:
             corr = self.corr_list[self.icons.placed.index(icon)]
+        except ValueError:
+            # This occurred with a user in the wild, just ignore it.
+            LOGGER.warning("Icon {!r} is not placed?", icon)
+            return
         except IndexError:
-            LOGGER.warning("Icon has no matching corridor!")
+            LOGGER.warning("Icon {!r} has no matching corridor!", icon)
             return
         self.displayed_corr.value = corr
 
@@ -419,8 +423,11 @@ class Selector[IconT: Icon, OptionRowT: OptionRow, OpenButton](ReflowWindow, ABC
         """Fires when a corridor icon is clicked."""
         try:
             corr = self.corr_list[self.icons.placed.index(icon)]
+        except ValueError:
+            LOGGER.warning("Icon {!r} is not placed?", icon)
+            return
         except IndexError:
-            LOGGER.warning("Icon has no matching corridor!")
+            LOGGER.warning("Icon {!r} has no matching corridor!", icon)
             return
         if self.sticky_corr is corr:
             # Already selected, toggle the checkbox. But only deselect if another is selected.
