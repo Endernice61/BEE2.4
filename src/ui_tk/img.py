@@ -323,7 +323,7 @@ class TKImages(img.UIImage):
             if width != res.width or height != res.height:
                 res = res.resize(
                     (width, height),
-                    Image.NEAREST if handle.resize_pixel else Image.LANCZOS,
+                    Image.Resampling.NEAREST if handle.resize_pixel else Image.Resampling.LANCZOS,
                 )
 
             if image is None:

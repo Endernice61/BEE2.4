@@ -345,7 +345,7 @@ def set_screenshot(image: Image.Image | None = None) -> None:
             int(PETI_WIDTH // 3.5),
             int(PETI_HEIGHT // 3.5),
         ),
-        Image.LANCZOS
+        Image.Resampling.LANCZOS
     )
     tk_screenshot = ImageTk.PhotoImage(tk_img)
     UI['thumb_label']['image'] = tk_screenshot
