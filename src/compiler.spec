@@ -62,8 +62,6 @@ EXCLUDES = [
     # Scripts not code.
     'hammeraddons.gen_choreo',
     'hammeraddons.unify_fgd',
-    'quart.cli',
-    'flask.cli',
     # Trio -> CFFI -> uses setuptools for C compiler in some modes, but
     # trio doesn't use those.
     'setuptools',
