@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import IO, TypeGuard, Literal, Final, assert_never, cast
 
 from collections.abc import Sequence
-from pathlib import Path
+from pathlib import Path, PurePath
 from uuid import UUID, uuid4, uuid5
 import os
 import shutil
@@ -307,7 +307,7 @@ class Palette:
     async def parse(
         cls,
         kv: Keyvalues,
-        path: str,
+        path: PurePath,
         dialogs: Dialogs,
     ) -> tuple[Palette, bool]:
         """Parse a palette from a file.
@@ -374,7 +374,7 @@ class Palette:
             settings, upgraded_settings, unknown = config.PALETTE.parse_kv1(settings_conf)
             if unknown:
                 message = config.build_version_mismatch_prompt(
-                    unknown, can_skip=not readonly, pal_name=name,
+                    unknown, can_skip=not readonly, pal_name=(path, name),
                 )
                 match await dialogs.ask_custom(
                     message,
@@ -504,7 +504,7 @@ async def load_palettes(dialogs: Dialogs) -> list[Palette]:
 
     for name in os.listdir(PAL_DIR):  # this is both files and dirs
         LOGGER.info('Loading "{}"', name)
-        path = os.path.join(PAL_DIR, name)
+        path = Path(PAL_DIR, name)
 
         try:
             if name.endswith(PAL_EXT):
@@ -522,7 +522,7 @@ async def load_palettes(dialogs: Dialogs) -> list[Palette]:
                 else:
                     if needs_upgrade:
                         LOGGER.info('Resaving older palette file {}', pal.filename)
-                        config.backup_conf(Path(path), ".bak")
+                        config.backup_conf(path, ".bak")
                         pal.save(ignore_readonly=True)
                     palettes.append(pal)
                 continue

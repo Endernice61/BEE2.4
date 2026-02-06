@@ -1,6 +1,7 @@
 """Test palette saving and loading."""
 from __future__ import annotations
 
+from pathlib import PurePath
 from unittest.mock import create_autospec
 
 from pytest_regressions.data_regression import DataRegressionFixture
@@ -165,7 +166,7 @@ async def test_palette_load_v1(set_version: bool) -> None:
 
     dialogs = create_autospec(Dialogs, instance=True)
 
-    pal, upgrade = await Palette.parse(kv, 'test_file.vdf', dialogs)
+    pal, upgrade = await Palette.parse(kv, PurePath('test_file.vdf'), dialogs)
     assert upgrade is True
     check_palette(pal)
     assert pal.group == ''
@@ -185,7 +186,7 @@ async def test_palette_load_v2() -> None:
 
     dialogs = create_autospec(Dialogs, instance=True)
 
-    pal, upgrade = await Palette.parse(kv, 'test_file.vdf', dialogs)
+    pal, upgrade = await Palette.parse(kv, PurePath('test_file.vdf'), dialogs)
     assert upgrade is True
     check_palette(pal)
     assert pal.group == ''
@@ -208,7 +209,7 @@ async def test_palette_load_v3() -> None:
     ])
     dialogs = create_autospec(Dialogs, instance=True)
 
-    pal, upgrade = await Palette.parse(kv, 'test_file.vdf', dialogs)
+    pal, upgrade = await Palette.parse(kv, PurePath('test_file.vdf'), dialogs)
     assert upgrade is False
     check_palette(pal)
     assert pal.group == ''
