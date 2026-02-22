@@ -503,7 +503,15 @@ def set_player_portalgun(vmf: VMF, info: corridor.Info) -> None:
             vscripts='bee2/portal_man.nut',
             origin=ent_pos,
         )
-
+        
+        # Max map size is +-16384, for some reason we can't have a brush bigger than
+        # that in any dimension?
+        whole_map = vmf.make_prism(
+            Vec(-8192, -8192, -8192),
+            Vec(8192, 8192, 8192),
+            mat=consts.Tools.TRIGGER,
+        ).solid
+        
         if info.is_sp:
             vmf.create_ent(
                 classname='weapon_portalgun',
@@ -520,18 +528,22 @@ def set_player_portalgun(vmf: VMF, info: corridor.Info) -> None:
             # In coop we have not need to actually spawn portalguns. 
             pgun_script['classname'] = 'logic_script'
             # Make sure @portalman knows when players spawn
-            vmf.create_ent(
-                classname='comp_relay',
+            trig_spawn_oran = vmf.create_ent(
+                classname='trigger_playerteam',
                 targetname='@on_player_spawn_2',
                 origin=ent_pos,
-                OnTrigger="@portalgunCallScriptFunctionon_oran_spawn0-1"
+                target_team=2,
+                OnStartTouch="@portalgunCallScriptFunctionon_oran_spawn0-1"
             )
-            vmf.create_ent(
-                classname='comp_relay',
+            trig_spawn_blue = vmf.create_ent(
+                classname='trigger_playerteam',
                 targetname='@on_player_spawn_3',
                 origin=ent_pos,
-                OnTrigger="@portalgunCallScriptFunctionon_blue_spawn0-1"
+                target_team=3,
+                OnStartTouch="@portalgunCallScriptFunctionon_blue_spawn0-1"
             )
+            trig_spawn_oran.solids = [whole_map.copy()]
+            trig_spawn_blue.solids = [whole_map.copy()]
 
             # For Absolute Fizzler or otherwise, this fizzles portals on a
             # player remotely.
@@ -559,13 +571,6 @@ def set_player_portalgun(vmf: VMF, info: corridor.Info) -> None:
             spawnflags=1,  # Players
             KillWeapons=1,
         )
-        # Max map size is +-16384, for some reason we can't have a brush bigger than
-        # that in any dimension?
-        whole_map = vmf.make_prism(
-            Vec(-8192, -8192, -8192),
-            Vec(8192, 8192, 8192),
-            mat=consts.Tools.TRIGGER,
-        ).solid
 
         trig_stripper.solids = [whole_map]
 
