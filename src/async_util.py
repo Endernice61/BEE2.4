@@ -1,6 +1,6 @@
 """Various utilities for async code."""
 from __future__ import annotations
-from typing import Protocol, overload
+from typing import Protocol, overload, cast, Any
 from collections.abc import Awaitable, AsyncGenerator, Callable
 import contextlib
 import os
@@ -50,7 +50,9 @@ class EdgeTrigger[*Args]:
             self._result = None
             self.ready.value = True
             await self._lot.park()
-            match self._result:
+            # Cast to discard the narrowing of _result from above - checker doesn't invalidate
+            # from await.
+            match cast('tuple[Any, ...] | None', self._result):
                 case None:
                     raise AssertionError(f'{self!r} was not set!')
                 case []:
@@ -179,7 +181,7 @@ async def iterval_cancelling[T](value: AsyncValue[T]) -> AsyncGenerator[T]:
     async def wait() -> None:
         """Wait for a change, then cancel."""
         await value.wait_transition()
-        nursery.cancel_scope.cancel()
+        nursery.cancel_scope.cancel('changed')
 
     async with trio.open_nursery() as nursery:
         nursery.start_soon(wait)

@@ -77,6 +77,15 @@ ORIENTS = {
     Vec.W: FrozenMatrix.from_angle(90, 0, 0),
 }
 
+# Position/orient offsets for hole locations.
+# We have to allow the start-reversed offset locations, plus those in the adjacent voxel.
+HOLE_ITEM_OFFSETS = [
+    (-64.0, FrozenMatrix()),
+    (-64.0, FrozenMatrix.from_roll(180)),
+    (-32.0, FrozenMatrix.from_roll(180)),
+    (-96.0, FrozenMatrix()),
+]
+
 # Direction -> border value for that side.
 NORMAL_TO_BORDER: dict[tuple[Literal[-1, 0, +1], Literal[-1, 0, +1]], Border] = {
     (0, +1): Border.STRAIGHT_N,
@@ -899,6 +908,9 @@ def parse_map(vmf: VMF, conn_items: Mapping[str, connections.Item]) -> None:
         if filename in frame_inst:  # Frames are useless, we'll make our own.
             inst.remove()
 
+    for grid in BARRIERS.values():
+        grid.compact()
+
     for entities, material, barrier_type, fixup_value in [
         (vmf.by_class['func_detail'], consts.Special.GLASS, BARRIER_TYPES[GLASS_ID], 'glass'),
         (vmf.by_class['func_brush'], consts.Special.GRATING, BARRIER_TYPES[GRATE_ID], 'grating'),
@@ -1067,39 +1079,28 @@ def res_barrier_hole(inst: Entity, res: Keyvalues) -> None:
     """Add Glass/grating holes. The value is the ID of a BarrierHole."""
     hole_type = HOLE_TYPES[utils.obj_id(res.value)]
 
-    orient = FrozenMatrix.from_angstr(inst['angles'])
-    origin: FrozenVec = FrozenVec.from_str(inst['origin']) // 128 * 128 + 64
-    origin += orient.up(-64.0)
-    plane = PlaneKey(orient.up(-1.0), origin)
+    inst_orient = FrozenMatrix.from_angstr(inst['angles'])
+    inst_origin: FrozenVec = FrozenVec.from_str(inst['origin']) // 128 * 128 + 64
 
-    first_variant = test_hole_spot(origin, plane, orient, hole_type)
-    if first_variant is not None:
-        sel_plane = plane
-        sel_orient = orient
-        sel_variant = first_variant
+    for offset, rot in HOLE_ITEM_OFFSETS:
+        orient = rot @ inst_orient
+        origin = inst_origin + inst_orient.up(offset)
+        plane = PlaneKey(orient.up(-1.0), origin)
+        variant = test_hole_spot(origin, plane, orient, hole_type)
+        if variant is not None:
+            break
     else:
-        # Test the opposite side of the glass too.
-        alt_orient = FrozenMatrix.from_roll(180) @ orient
-        plane = PlaneKey(alt_orient.up(-1.0), origin)
-
-        sec_variant = test_hole_spot(origin, plane, alt_orient, hole_type)
-        if sec_variant is not None:
-            sel_orient = alt_orient
-            sel_plane = plane
-            sel_variant = sec_variant
-            inst['angles'] = sel_orient.to_angle()
-        else:
-            raise user_errors.UserError(
-                user_errors.TOK_BARRIER_HOLE_MISPLACED.format(hole=hole_type.id),
-                barrier_holes=[hole_type.error_info(
-                    origin=origin,
-                    orient=orient,
-                    footprint=True,
-                )],
-            )
+        raise user_errors.UserError(
+            user_errors.TOK_BARRIER_HOLE_MISPLACED.format(hole=hole_type.id),
+            barrier_holes=[hole_type.error_info(
+                origin=inst_origin,
+                orient=inst_orient,
+                footprint=True,
+            )],
+        )
     # Place it, or error if there's already one here.
     try:
-        existing = HOLES[sel_plane][origin]
+        existing = HOLES[plane][origin]
     except KeyError:
         pass
     else:
@@ -1109,7 +1110,7 @@ def res_barrier_hole(inst: Entity, res: Keyvalues) -> None:
             barrier_holes=[
                 hole_type.error_info(
                     origin=origin,
-                    orient=sel_orient,
+                    orient=orient,
                     footprint=True,
                 ),
                 existing.type.error_info(
@@ -1119,19 +1120,20 @@ def res_barrier_hole(inst: Entity, res: Keyvalues) -> None:
                 ),
             ],
         )
-    HOLES[sel_plane][origin] = Hole(
+    HOLES[plane][origin] = Hole(
         inst=inst,
         type=hole_type,
-        variant=sel_variant,
-        plane=sel_plane,
-        orient=sel_orient,
+        variant=variant,
+        plane=plane,
+        orient=orient,
         origin=origin.thaw(),
     )
     inst['origin'] = origin
-    inst.fixup['$variant'] = sel_variant.id
-    if sel_variant.instance:
-        inst['file'] = sel_variant.instance
-        conditions.ALL_INST.add(sel_variant.instance.casefold())
+    inst['angles'] = orient
+    inst.fixup['$variant'] = variant.id
+    if variant.instance:
+        inst['file'] = variant.instance
+        conditions.ALL_INST.add(variant.instance.casefold())
 
 
 def template_solids_and_coll(template_id: str) -> tuple[HoleTemplate, Sequence[collisions.BBox]]:
@@ -1347,6 +1349,7 @@ def find_plane_groups(grid: PlaneGrid[Barrier]) -> Iterator[tuple[Barrier, Plane
                     (x, y - 1),
                     (x, y + 1),
                 }
+        group.compact()
         yield cmp_value, group
 
 
@@ -1543,14 +1546,16 @@ def try_place_hole(
                 # be more optimal. To pick, arbitrarily make the upper one
                 # be in charge.
                 if corn_v > (hole.plane_pos[1] // 32):
-                    hole_temp.append(hole.variant.template_diagonal + (corn_mat, ))
+                    brushes, collide = hole.variant.template_diagonal
+                    hole_temp.append((brushes, collide, corn_mat))
                 continue
             # This bit of the glass is present, so include it in our brush, then clear.
             if (corn_u, corn_v) in grid:
-                hole_temp.append(hole.variant.template_square + (corn_mat, ))
+                brushes, collide = hole.variant.template_square
                 grid[corn_u, corn_v] = BARRIER_EMPTY
             else:
-                hole_temp.append(hole.variant.template + (corn_mat, ))
+                brushes, collide = hole.variant.template
+            hole_temp.append((brushes, collide, corn_mat))
 
     else:
         orient = Matrix.from_basis(

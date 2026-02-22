@@ -19,7 +19,6 @@ from ui_wx import wid_transtoken
 from ui_wx.img import WX_IMG
 from ui_wx import APP, MAIN_WINDOW
 from config.gen_opts import GenOptions
-from config.last_sel import LastSelected
 import config
 import app
 import loadScreen
@@ -51,12 +50,6 @@ async def init_app(core_nursery: trio.Nursery) -> None:
         LOGGER.debug('Loading settings...')
 
         await gameMan.load(DIALOG)
-        try:
-            last_game = config.APP.get_cur_conf(LastSelected, 'game')
-        except KeyError:
-            pass
-        else:
-            gameMan.set_game_by_name(last_game.id)
 
         core_nursery.start_soon(sound.sound_task)
 
@@ -98,7 +91,7 @@ async def init_app(core_nursery: trio.Nursery) -> None:
 
             # If our window isn't actually visible, this is set to nonsense -
             # ignore those values.
-            if MAIN_WINDOW.IsActive() and (pos := MAIN_WINDOW.GetScreenPosition()).IsFullySpecified():
+            if MAIN_WINDOW.IsActive() and (pos := MAIN_WINDOW.GetScreenPosition()).IsFullySpecified():  # type: ignore[unreachable]
                 config.APP.store_conf(WindowState(x=pos.x, y=pos.y), 'main_window')
 
             try:
@@ -142,7 +135,7 @@ async def app_main(init: Callable[[trio.Nursery], Awaitable[Any]]) -> None:
         # Run main app, then once completed cancel this nursery to quit all other tasks.
         # It gets given the nursery to allow spawning new tasks here.
         await init(nursery)
-        nursery.cancel_scope.cancel()
+        nursery.cancel_scope.cancel('app_main() finished')
 
 
 def done_callback(result: Outcome[None]) -> None:

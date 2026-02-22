@@ -2,7 +2,7 @@
 Handles scanning through the zip packages to find all items, styles, etc.
 """
 from __future__ import annotations
-from typing import Any, ClassVar, NewType, NoReturn, Self, cast, overload
+from typing import Any, ClassVar, NewType, NoReturn, Self, cast, overload, final
 
 from collections import defaultdict
 from collections.abc import (
@@ -10,6 +10,7 @@ from collections.abc import (
 )
 from enum import Enum
 from pathlib import Path
+import builtins
 import os
 import zipfile
 
@@ -66,7 +67,7 @@ __all__ = [
     'TRANS_OBJ_NOT_FOUND',
 ]
 
-LOGGER = srctools.logger.get_logger(__name__, alias='packages')
+LOGGER = srctools.logger.get_logger('packages', alias='packages')
 OBJ_TYPES: dict[str, type[PakObject]] = {}
 PACK_CONFIG = ConfigFile('packages.cfg')
 
@@ -202,7 +203,7 @@ class AttrDef:
     def bool(
         cls, attr_id: str,
         desc: TransToken = TransToken.BLANK,
-        default: bool = False,
+        default: builtins.bool = False,
     ) -> AttrDef:
         """Alternative constructor for bool-type attrs."""
         return AttrDef(attr_id, desc, default, AttrTypes.BOOL)
@@ -247,7 +248,7 @@ class SelitemData:
     group_id: str
     sort_key: str
     # The packages used to define this, used for debugging.
-    packages: frozenset[str] = attrs.Factory(frozenset)
+    packages: frozenset[utils.ObjectID] = attrs.Factory(frozenset)
 
     @property
     def context_lbl(self) -> TransToken:
@@ -324,11 +325,10 @@ class SelitemData:
             )
         except LookupError:
             icon = None
-        large_key: Keyvalues | None
         try:
             large_key = info.find_key('iconLarge')
         except LookupError:
-            large_icon = large_key = None
+            large_icon = None
         else:
             large_icon = img.Handle.parse(
                 large_key,
@@ -417,6 +417,10 @@ class PackErrorInfo:
         """Emit a non-fatal warning, shortcut for errors.add()."""
         self.errors.add(warning)
 
+    def warn_fatal(self, warning: AppError | TransToken) -> None:
+        """Emit a fatal warning, shortcut for errors.add()."""
+        self.errors.add(warning, fatal=True)
+
     def warn_auth(self, package: utils.SpecialID, warning: AppError | TransToken, /) -> None:
         """If the specified package is a developer package, emit a warning."""
         if self.packset.use_dev_warnings(package):
@@ -428,11 +432,8 @@ class PackErrorInfo:
 
     def warn_auth_fatal(self, package: utils.SpecialID, warning: AppError | TransToken, /) -> None:
         """If the specified package is a developer package, emit a fatal warning."""
-        if not isinstance(warning, AppError):
-            warning = AppError(warning)
-        warning.fatal = True
         if self.packset.use_dev_warnings(package):
-            self.errors.add(warning)
+            self.errors.add(warning, fatal=True)
         else:  # Write it to the log.
             if isinstance(warning, AppError):
                 warning = warning.message
@@ -458,12 +459,12 @@ class ParseData(PackErrorInfo):
         warning: AppError | TransToken | None = None,
     ) -> None:
         """If this package/the specified package is a developer one, emit a warning."""
-        if isinstance(package, str):
+        if isinstance(package, TransToken) or isinstance(package, AppError):
+            super().warn_auth(self.pak_id, package)
+        else:
             if warning is None:
                 raise TypeError("warn_auth() missing warning parameter.")
             super().warn_auth(package, warning)
-        else:
-            super().warn_auth(self.pak_id, package)
 
     @overload
     def warn_auth_fatal(self, warning: AppError | TransToken, /) -> None: ...
@@ -475,12 +476,12 @@ class ParseData(PackErrorInfo):
         warning: AppError | TransToken | None = None,
     ) -> None:
         """If this package/the specified package is a developer one, emit a fatal warning."""
-        if isinstance(package, str):
+        if isinstance(package, TransToken) or isinstance(package, AppError):
+            super().warn_auth_fatal(self.pak_id, package)
+        else:
             if warning is None:
                 raise TypeError("warn_auth() missing warning parameter.")
             super().warn_auth_fatal(package, warning)
-        else:
-            super().warn_auth_fatal(self.pak_id, package)
 
 
 @attrs.define
@@ -646,6 +647,7 @@ class SelPakObject(PakObject):
         return getter
 
 
+@final
 @attrs.frozen
 class PakRef[PakT: PakObject]:
     """Encapsulates an ID for a specific pakobject class."""
@@ -677,6 +679,7 @@ class PakRef[PakT: PakObject]:
         return self.id
 
 
+@final
 @attrs.define(eq=False)
 class ExportKey[T]:
     """Keys which define the types required to export different package objects.
@@ -797,7 +800,7 @@ class PackagesSet:
     # Value is set to None if conflicting migrations exist - this key is ignored.
     # This is not used for Items, which have subtypes to contend with. That uses a dict weakly keyed
     # on packsets.
-    _migrations: dict[PakRef, PakRef | None] = attrs.field(init=False, factory=dict)
+    _migrations: dict[PakRef[Any], PakRef[Any] | None] = attrs.field(init=False, factory=dict)
 
     # Indicates if an object type has been fully parsed.
     _type_ready: dict[type[PakObject], trio.Event] = attrs.field(init=False, factory=dict)
@@ -808,9 +811,13 @@ class PackagesSet:
     mel_music_fsys: FileSystem | None = None
     tag_music_fsys: FileSystem | None = None
 
-    # Objects we've warned about not being present. Since this is stored
-    # here it'll automatically clear when reloading. If None, it's suppressed instead.
-    _unknown_obj_warnings: set[tuple[type[PakObject], str]] | None = attrs.Factory(set)
+    # Stores keys used to avoid warning multiple times about errors.
+    # Since this is stored here, reloading packages automatically resets. If None,
+    # warnings repeat each time.
+    _warnings: set[
+        tuple[PakRef[Any], str, *tuple[object, ...]] |
+        tuple[type[Package], utils.ObjectID]
+    ] | None = attrs.Factory(set)
 
     # In dev mode, all lazy files are sent here to be syntax checked.
     # The other end is implemented in lifecycle.
@@ -819,12 +826,12 @@ class PackagesSet:
     @classmethod
     def blank(cls) -> Self:
         """Create an empty set, with all types marked as finished."""
-        pakset = cls()
+        pakset: Self = cls()
         event = trio.Event()
         event.set()
         pakset._parsed.update(OBJ_TYPES.values())
         pakset._type_ready = dict.fromkeys(pakset._parsed, event)
-        pakset._unknown_obj_warnings = None
+        pakset._warnings = None
         return pakset
 
     @property
@@ -847,6 +854,37 @@ class PackagesSet:
         except KeyError:
             LOGGER.warning('Trying to warn about package "{}" which does not exist?', package)
             return True  # Missing, warn about it?
+
+    def obj_warn(self, obj: PakObject | PakRef[Any], message: str, *args: object) -> None:
+        """Warn about an issue with the specified object.
+
+        If not already warned for this package, log it.
+        """
+        if isinstance(obj, PakObject):
+            obj = obj.reference()
+        key = (obj, message, *args)
+        if self._warnings is None:
+            LOGGER.warning(message, *args)
+        elif key not in self._warnings:
+            LOGGER.warning(message, *args)
+            self._warnings.add(key)
+
+    def package_disp_name(self, pak_id: utils.ObjectID) -> TransToken:
+        """Look up the friendly name for a package.
+
+        If not found, warn once in the logs, return the ID untranslated.
+        """
+        try:
+            return self.packages[pak_id].disp_name
+        except KeyError:
+            pass
+        key = (Package, pak_id)
+        if self._warnings is None:
+            LOGGER.warning('No package "{}"?', pak_id)
+        elif key not in self._warnings:
+            LOGGER.warning('No package "{}"?', pak_id)
+            self._warnings.add(key)
+        return TransToken.untranslated(pak_id)
 
     def ready(self, cls: type[PakObject]) -> trio.Event:
         """Return a Trio Event which is set when a specific object type is fully parsed."""
@@ -891,13 +929,12 @@ class PackagesSet:
         try:
             return obj_dict[obj_id.casefold()]
         except KeyError:
-            if (
-                warn
-                and self._unknown_obj_warnings is not None
-                and (key := (cls, obj_id)) not in self._unknown_obj_warnings
-            ):
-                self._unknown_obj_warnings.add(key)
-                LOGGER.warning('The {} package object "{}" does not exist!', cls.__name__, obj_id)
+            if warn:
+                self.obj_warn(
+                    PakRef(cls, utils.obj_id(obj_id)),
+                    'The {} package object "{}" does not exist!',
+                    cls.__name__, obj_id,
+                )
             raise
 
     def add(self, obj: PakObject, pak_id: utils.SpecialID, pak_name: str) -> None:
@@ -931,13 +968,14 @@ class PackagesSet:
             LOGGER.debug('Migration: {} -> {}', old_ref, new_ref)
             self._migrations[old_ref] = new_ref
         else:
-            if new_ref != exist:
+            if exist is not None and new_ref != exist:
                 # Divergent migrations. Warn the author, mark as invalid.
-                try:  # Need to check which packages these exist in.
-                    new_obj = new_ref.resolve(self)
-                    exist_obj = exist.resolve(self)
-                except KeyError as exc:  # Added but somehow missing now? Just error out.
-                    raise ValueError(f'Conflicting migration: {old_ref} -> {exist} & {new_ref}') from exc
+                new_obj = new_ref.resolve(self)
+                exist_obj = exist.resolve(self)
+                if new_obj is None or exist_obj is None:  # Added but somehow missing now? Just error out.
+                    raise AppError(TransToken.untranslated(
+                        f'Conflicting migration: {old_ref} -> {exist} & {new_ref}'
+                    ))
                 if self.use_dev_warnings(new_obj.pak_id) or self.use_dev_warnings(exist_obj.pak_id):
                     errors.warn(TRANS_MIGRATION_CONFLICT.format(
                         obj_type=type(new).__name__,
@@ -1353,10 +1391,13 @@ async def parse_object(
                 )
             )
             await trio.lowlevel.checkpoint()
+    except AppError:
+        raise  # Report these to users.
+    # TODO: These should be displayed in the ErrorUI, plus needs ExceptionGroup handling.
     except (NoKeyError, IndexError) as e:
         reraise_keyerror(e, obj_id)
     except TokenSyntaxError as e:
-        # Add the relevant package to the filename.
+        # Add the relevant package to the filename. TODO: This should just be in the parse function.
         if e.file:
             e.file = f'{obj_data.pak_id}:{e.file}'
         raise
@@ -1367,7 +1408,7 @@ async def parse_object(
         ) from e
 
     if not hasattr(object_, 'id'):
-        raise ValueError(f'"{obj_class.__name__}" object {object_} has no ID!')
+        raise AppError(TransToken.untranslated(f'"{obj_class.__name__}" object {object_} has no ID!'))
     assert object_.id == obj_id, f'{object_!r} -> {object_.id} != "{obj_id}"!'
 
     object_.pak_id = obj_data.pak_id
@@ -1385,10 +1426,11 @@ async def parse_object(
                 e.file = f'{override_data.pak_id}:{e.file}'
             raise
         except Exception as e:
-            raise ValueError(
+            e.add_note(
                 f'Error occured parsing {obj_id} override '
                 f'from package {override_data.pak_id}!'
-            ) from e
+            )
+            raise
 
         await trio.lowlevel.checkpoint()
         object_.add_over(override)
@@ -1403,9 +1445,9 @@ def parse_pack_transtoken(pack: Package, kv: Keyvalues) -> None:
     try:
         obj_id = kv['id'].casefold()
     except LookupError:
-        raise ValueError('No ID for "TransToken" object type!') from None
+        raise AppError(TransToken.untranslated('No ID for "TransToken" object type!')) from None
     if obj_id in pack.additional_tokens:
-        raise ValueError('Duplicate translation token "{}:{}"', pack.id, obj_id)
+        raise AppError(TransToken.untranslated(f'Duplicate translation token "{pack.id}:{obj_id}!'))
     with srctools.logger.context(f'{pack.id}:{obj_id}'):
         token = TransToken.parse(pack.id, parse_multiline_key(kv, 'text'))
 
@@ -1605,7 +1647,9 @@ class Style(SelPakObject, needs_foreground=True):
                 renderables = {}
                 vbsp = lazy_conf.BLANK
             else:
-                raise ValueError(f'Style "{data.id}" missing configuration folder!') from None
+                raise AppError(TransToken.untranslated(
+                    f'Style "{data.id}" missing configuration folder!'
+                )) from None
         else:
             with data.fsys[folder + '/items.txt'].open_str() as f:
                 items, renderables = await trio.to_thread.run_sync(EditorItem.parse, f, data.pak_id)
@@ -1654,7 +1698,7 @@ class Style(SelPakObject, needs_foreground=True):
 
             base: list[Style] = []
             b_style = style
-            while b_style is not None:
+            while True:
                 # Recursively find all the base styles for this one.
                 if b_style in base:
                     # Already hit this, fatal error. Append the style to the end to more clearly

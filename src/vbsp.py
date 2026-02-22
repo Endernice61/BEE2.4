@@ -134,12 +134,18 @@ async def load_settings() -> tuple[
     vconf = res_vconf.result()
     tex_block = Keyvalues('Textures', list(vconf.find_children('textures')))
 
-    texturing.load_config(tex_block)
-
     # Load in our main configs...
     options.load(vconf.find_all('Options'))
     config.COMPILER.merge_conf(res_dmx_conf.result())
     utils.DEV_MODE = options.DEV_MODE()
+
+    texturing.NEW_TILE_GEN = srctools.conv_bool(
+        options.get_itemconf('VALVE_MANDATORY:PlanarTileGenerator', '1'),
+        True,
+    )
+    LOGGER.info('New tile generator: {}', texturing.NEW_TILE_GEN)
+
+    texturing.load_config(tex_block)
 
     # Configuration properties for styles.
     for stylevar_block in vconf.find_all('stylevars'):
@@ -155,7 +161,10 @@ async def load_settings() -> tuple[
         raise ValueError(f'Invalid list of editor items, got: {editor_list!r}')
     for item in editor_list:
         if isinstance(item, editoritems.Item):
-            id_to_item[item.id] = item
+            if item.id != '':
+                id_to_item[item.id] = item
+            else:
+                raise ValueError(f'Invalid editor item with no ID: {item!r}')
         else:
             raise ValueError(f'Invalid editor item, got: {item!r}')
 
@@ -364,7 +373,6 @@ def set_player_model(vmf: VMF, info: corridor.Info) -> None:
         return
 
     loc = options.GLOBAL_ENTS_LOC()
-    assert loc is not None
     model_id = BEE2_config.get_val(
         'General', 'player_model_id',
         consts.DEFAULT_PLAYER,
@@ -485,7 +493,6 @@ def set_player_portalgun(vmf: VMF, info: corridor.Info) -> None:
         info.set_attr('spawn_nogun')
 
     ent_pos = options.GLOBAL_PTI_ENTS_LOC()
-    assert ent_pos is not None
 
     logic_auto = vmf.create_ent('logic_auto', origin=ent_pos, flags='1')
 
@@ -898,8 +905,6 @@ def fit_goo_mist(
 
     needs_mist is a set of all added sides, so we don't double-up on a space.
     """
-    if grid_y is None:
-        grid_y = grid_x
     for pos in sides:
         if pos not in needs_mist:
             continue  # We filled this space already
@@ -1527,7 +1532,10 @@ async def main(argv: list[str]) -> None:
     """Main program code.
 
     """
-    LOGGER.info("BEE{} VBSP hook initiallised, srctools v{}.", utils.BEE_VERSION, srctools.__version__)
+    LOGGER.info(
+        "BEE{} VBSP hook initiallised, srctools v{}, HammerAddons v{}.",
+        utils.BEE_VERSION, utils.SRCTOOLS_VERSION, utils.HA_VERSION,
+    )
     await trio.lowlevel.checkpoint()
 
     # Warn if srctools Cython code isn't installed.
@@ -1692,7 +1700,7 @@ async def main(argv: list[str]) -> None:
         tiling.generate_goo(vmf)
         tiling.bind_overlays()
 
-        faithplate.gen_faithplates(vmf, info.has_attr('superposition'))
+        faithplate.gen_faithplates(vmf, info)
         change_overlays(vmf)
         fix_worldspawn(vmf, info)
 
@@ -1700,6 +1708,8 @@ async def main(argv: list[str]) -> None:
             coll.export_debug(vmf, vis_name='collisions')
         coll.export_vscript(vmf)
 
+        # Remove blank instances, check for markers.
+        conditions.cleanup_instances(vmf)
         # Ensure all VMF outputs use the correct separator.
         for ent in vmf.entities:
             for out in ent.outputs:

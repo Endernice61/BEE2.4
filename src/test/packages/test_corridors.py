@@ -2,6 +2,7 @@ import pytest
 
 from corridor import Attachment, Direction, GameMode
 from packages.corridor import parse_specifier, parse_corr_kind
+from transtoken import AppError
 
 
 @pytest.mark.parametrize('text, mode, direction, attach', [
@@ -36,9 +37,9 @@ from packages.corridor import parse_specifier, parse_corr_kind
 ])
 def test_specifier_parse(
     text: str,
-    mode: GameMode,
-    direction: Direction,
-    attach: Attachment,
+    mode: GameMode | None,
+    direction: Direction | None,
+    attach: Attachment | None,
 ) -> None:
     """Test parsing any kind of specifier."""
     assert parse_specifier(text) == (mode, direction, attach)
@@ -65,7 +66,7 @@ def test_specifier_fail(text: str) -> None:
     """Ensure invalid values don't succeed."""
     try:
         result = parse_specifier(text)
-    except ValueError:
+    except AppError:
         pass
     else:
         pytest.fail(f'Got: {result!r}')
@@ -73,7 +74,7 @@ def test_specifier_fail(text: str) -> None:
     # Applied to corridor kinds as well.
     try:
         result = parse_corr_kind(text)
-    except ValueError:
+    except AppError:
         pass
     else:
         pytest.fail(f'Got: {result!r}')
@@ -98,7 +99,7 @@ def test_corr_kind_fail(text: str) -> None:
     """Corridor kinds specifically do not allow mode/direction to be unspecified."""
     try:
         result = parse_corr_kind(text)
-    except ValueError:
+    except AppError:
         pass
     else:
         pytest.fail(f'Got: {result!r}')

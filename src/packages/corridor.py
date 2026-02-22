@@ -13,7 +13,6 @@ import utils
 from app import img, lazy_conf
 from app.mdown import MarkdownData
 import packages
-import editoritems
 from corridor import (
     Attachment, CorrKind, CorrSpec, OptValue, OptionGroup,
     Orient, Direction, GameMode,
@@ -21,6 +20,7 @@ from corridor import (
     CORRIDOR_COUNTS, ID_TO_CORR,
     ORIENT_TO_ATTACH,
 )
+from packages import PackagesSet
 from transtoken import AppError, TransToken, TransTokenSource
 
 
@@ -48,6 +48,7 @@ ALL_DIRS: Final[Sequence[Direction]] = list(Direction)
 TRANS_DUPLICATE_OPTION = TransToken.untranslated(
     'Duplicate corridor option ID "{option}" in corridor group for style "{group}"!'
 )
+TRANS_MISSING_VARIANT = TransToken.untranslated('No corridors defined for {style}:{variant}!')
 
 
 @attrs.frozen(kw_only=True)
@@ -84,7 +85,9 @@ def parse_specifier(specifier: str) -> CorrSpec:
             pass
         else:
             if direction is not None:
-                raise ValueError(f'Multiple entry/exit keywords in "{specifier}"!')
+                raise AppError(TransToken.untranslated(
+                    f'Multiple entry/exit keywords in corridor type "{specifier}"!'
+                ))
             direction = parsed_dir
             continue
         try:
@@ -93,7 +96,9 @@ def parse_specifier(specifier: str) -> CorrSpec:
             pass
         else:
             if attach is not None or orient is not None:
-                raise ValueError(f'Multiple attachment keywords in "{specifier}"!')
+                raise AppError(TransToken.untranslated(
+                    f'Multiple attachment keywords in corridor type "{specifier}"!'
+                ))
             attach = parsed_attach
             continue
         try:
@@ -102,7 +107,9 @@ def parse_specifier(specifier: str) -> CorrSpec:
             pass
         else:
             if attach is not None or orient is not None:
-                raise ValueError(f'Multiple attachment keywords in "{specifier}"!')
+                raise AppError(TransToken.untranslated(
+                    f'Multiple attachment keywords in corridor type "{specifier}"!'
+                ))
             orient = parsed_orient
             continue
         try:
@@ -111,12 +118,16 @@ def parse_specifier(specifier: str) -> CorrSpec:
             pass
         else:
             if mode is not None:
-                raise ValueError(f'Multiple sp/coop keywords in "{specifier}"!')
+                raise AppError(TransToken.untranslated(
+                    f'Multiple sp/coop keywords in corridor type "{specifier}"!'
+                ))
             mode = parsed_mode
             continue
         # Completely empty specifier will split into [''], allow `sp__exit` too.
         if part:
-            raise ValueError(f'Unknown keyword "{part}" in "{specifier}"!')
+            raise AppError(TransToken.untranslated(
+                f'Unknown keyword "{part}" in corridor type "{specifier}"!'
+            ))
     if orient is not None:
         # Use exit so that 'up' -> ceiling, 'down' -> floor.
         attach = ORIENT_TO_ATTACH[direction or Direction.EXIT, orient]
@@ -129,23 +140,27 @@ def parse_corr_kind(specifier: str) -> CorrKind:
     if attach is None:  # Infer horizontal if unspecified.
         attach = Attachment.HORIZONTAL
     if direction is None:
-        raise ValueError(f'Direction must be specified in "{specifier}"!')
+        raise AppError(TransToken.untranslated(
+            f'Corridor type "{specifier}" must specify a direction!'
+        ))
     if mode is None:
-        raise ValueError(f'Game mode must be specified in "{specifier}"!')
+        raise AppError(TransToken.untranslated(
+            f'Corridor type "{specifier}" must specify a game mode!'
+        ))
     return mode, direction, attach
 
 
 def parse_option(
-    pak_id: utils.ObjectID,
+    data: packages.ParseData,
     kv: Keyvalues,
 ) -> Option:
     """Parse a KV1 config into an option."""
     opt_id = utils.obj_id(kv.real_name, 'corridor option')
-    name = TransToken.parse(pak_id, kv['name'])
+    name = TransToken.parse(data.pak_id, kv['name'])
     valid_ids: set[utils.ObjectID] = set()
     values: list[OptValue] = []
     fixup = kv['var']
-    desc = TransToken.parse(pak_id, packages.parse_multiline_key(kv, 'description'))
+    desc = TransToken.parse(data.pak_id, packages.parse_multiline_key(kv, 'description'))
 
     for child in kv.find_children('Values'):
         val_id = utils.obj_id(child.real_name, 'corridor option value')
@@ -154,11 +169,13 @@ def parse_option(
         valid_ids.add(val_id)
         values.append(OptValue(
             id=val_id,
-            name=TransToken.parse(pak_id, child.value),
+            name=TransToken.parse(data.pak_id, child.value),
         ))
 
     if not values:
-        raise ValueError(f'Option "{opt_id}" has no valid values!')
+        raise AppError(TransToken.untranslated(
+            f'Corridor option "{opt_id}" for style "{data.id}" has no valid values!'
+        ))
 
     try:
         default = utils.special_id(kv['default'], 'corridor option default')
@@ -199,7 +216,7 @@ class CorridorGroup(packages.PakObject, allow_mult=True):
         global_options: dict[OptionGroup, list[Option]] = defaultdict(list)
         for opt_kv in data.info.find_children('Options'):
             with logger.context(opt_kv.real_name):
-                option = parse_option(data.pak_id, opt_kv)
+                option = parse_option(data, opt_kv)
             if option.id in options:
                 raise AppError(TRANS_DUPLICATE_OPTION.format(option=option.id, group=data.id))
             options[option.id] = option
@@ -240,10 +257,10 @@ class CorridorGroup(packages.PakObject, allow_mult=True):
                         mode, direction, attach, kv['Name', kv['instance']],
                     )
                 else:
-                    raise ValueError(
+                    raise AppError(TransToken.untranslated(
                         f'Non-horizontal {mode.value}_{direction.value}_{attach.value} corridor '
                         f'"{kv["Name", kv["instance"]]}" cannot be defined as a legacy corridor!'
-                    )
+                    ))
             try:
                 name = TransToken.parse(data.pak_id, kv['Name'])
             except LookupError:
@@ -309,6 +326,8 @@ class CorridorGroup(packages.PakObject, allow_mult=True):
         # Need both of these to be parsed.
         await packset.ready(packages.Item).wait()
         await packset.ready(packages.Style).wait()
+        # Groups we synthesised.
+        legacy_groups: set[utils.ObjectID] = set()
         for item_id, (mode, direction) in ID_TO_CORR.items():
             try:
                 item = packset.obj_by_id(packages.Item, item_id, warn=False)
@@ -327,6 +346,8 @@ class CorridorGroup(packages.PakObject, allow_mult=True):
                         # Synthesise a new group to match.
                         corridor_group = cls(id=style_id, corridors={})
                         packset.add(corridor_group, item.pak_id, item.pak_name)
+                        legacy_groups.add(style_id)
+                        LOGGER.info('Synthesising corridor group for "{}"', style_id)
 
                     corr_list = corridor_group.corridors.setdefault(
                         (mode, direction, Attachment.HORIZONTAL),
@@ -341,7 +362,7 @@ class CorridorGroup(packages.PakObject, allow_mult=True):
                         except IndexError:
                             LOGGER.warning('Corridor {}:{} does not have enough instances!', style_id, item_id)
                             break
-                        if inst.inst == editoritems.FSPath():  # Blank, not used.
+                        if inst.is_blank:  # Should be skipped.
                             continue
                         fname = str(inst.inst)
                         if (folded := fname.casefold()) in dup_check:
@@ -393,42 +414,26 @@ class CorridorGroup(packages.PakObject, allow_mult=True):
         # Apply inheritance.
         for corridor_group in packset.all_obj(cls):
             for inherit in corridor_group.inherit:
+                corridor_group._inherit_from(ctx, packset, inherit, True)
+
+            if corridor_group.id in legacy_groups and not all(
+                corridor_group.corridors[mode, direction, Attachment.HORIZONTAL]
+                for mode in GameMode for direction in Direction
+            ):
+                # It's possible that a corridor could have nothing defined, if it referenced
+                # the item for a style that itself did update. In that case, if we have a base,
+                # try to inherit. This isn't fully correct, since the package could use <XX> refs
+                # to have loaded the items. This is compatibility code anyway, make a best effort.
                 try:
-                    parent_group = packset.obj_by_id(cls, inherit, warn=False)
+                    style = packset.obj_by_id(packages.Style, corridor_group.id)
                 except KeyError:
-                    ctx.warn_auth(corridor_group.pak_id, TransToken.untranslated(
-                        'Corridor Group "{id}" is trying to inherit from nonexistent group "{inherit}"!'
-                    ).format(id=corridor_group.id, inherit=inherit))
                     continue
-                if parent_group.inherit:
-                    # Disable recursive inheritance for simplicity, can add later if it's actually
-                    # useful.
-                    ctx.warn_auth(corridor_group.pak_id, TransToken.untranslated(
-                        'Corridor Group "{id}" cannot inherit from a group that '
-                        'itself inherits ("{inherit}"). If you need this, ask for '
-                        'it to be supported.'
-                    ).format(id=corridor_group.id, inherit=inherit))
-                    continue
-                for kind, corridors in parent_group.corridors.items():
-                    try:
-                        corridor_group.corridors[kind].extend(corridors)
-                    except KeyError:
-                        corridor_group.corridors[kind] = corridors.copy()
-
-                # Copy over options, but don't overwrite ones that already exist.
-                for opt_kind, options in parent_group.global_options.items():
-                    try:
-                        existing = corridor_group.global_options[opt_kind]
-                    except KeyError:
-                        corridor_group.global_options[opt_kind] = options.copy()
-                    else:
-                        existing_ids = {opt.id for opt in existing}
-                        for option in options:
-                            if option.id not in existing_ids:
-                                existing.append(option)
-
-                for option in parent_group.options.values():
-                    corridor_group.options.setdefault(option.id, option)
+                if style.base_style:
+                    LOGGER.warning(
+                        'Attempting to copy corridors from {} to {}',
+                        style.base_style, corridor_group.id,
+                    )
+                    corridor_group._inherit_from(ctx, packset, style.base_style, False)
 
         if utils.DEV_MODE:
             # Check no duplicate corridors exist.
@@ -437,12 +442,69 @@ class CorridorGroup(packages.PakObject, allow_mult=True):
                     dup_check = set()
                     for corr in corridors:
                         if (folded := corr.instance.casefold()) in dup_check:
-                            raise ValueError(
+                            ctx.warn_fatal(TransToken.untranslated(
                                 f'Duplicate corridor instance in '
                                 f'{corridor_group.id}:{mode.value}_{direction.value}_'
                                 f'{orient.value}!\n {corr.instance}'
-                            )
+                            ))
                         dup_check.add(folded)
+
+        # If our conversion failed to locate corridors, this is a fatal error.
+        for corridor_group in packset.all_obj(cls):
+            for mode in GameMode:
+                for direction in Direction:
+                    if not corridor_group.corridors[mode, direction, Attachment.HORIZONTAL]:
+                        ctx.errors.add(TRANS_MISSING_VARIANT.format(
+                            style=corridor_group.id,
+                            variant=f'{mode.value}_{direction.value}',
+                        ), fatal=True)
+
+    def _inherit_from(
+        self,
+        ctx: packages.PackErrorInfo, packset: PackagesSet,
+        parent_id: str, merge: bool,
+    ) -> None:
+        """Perform inheritance."""
+        try:
+            parent_group = packset.obj_by_id(CorridorGroup, parent_id, warn=False)
+        except KeyError:
+            ctx.warn_auth(self.pak_id, TransToken.untranslated(
+                'Corridor Group "{id}" is trying to inherit from nonexistent group "{inherit}"!'
+            ).format(id=self.id, inherit=parent_id))
+            return
+
+        if parent_group.inherit:
+            # Disable recursive inheritance for simplicity, can add later if it's actually
+            # useful.
+            ctx.warn_auth(self.pak_id, TransToken.untranslated(
+                'Corridor Group "{id}" cannot inherit from a group that '
+                'itself inherits ("{inherit}"). If you need this, ask for '
+                'it to be supported.'
+            ).format(id=self.id, inherit=parent_id))
+            return
+        for kind, corridors in parent_group.corridors.items():
+            try:
+                corr_list = self.corridors[kind]
+            except KeyError:
+                self.corridors[kind] = corridors.copy()
+            else:
+                if not corr_list or merge:
+                    corr_list.extend(corridors)
+
+        # Copy over options, but don't overwrite ones that already exist.
+        for opt_kind, options in parent_group.global_options.items():
+            try:
+                existing = self.global_options[opt_kind]
+            except KeyError:
+                self.global_options[opt_kind] = options.copy()
+            else:
+                existing_ids = {opt.id for opt in existing}
+                for option in options:
+                    if option.id not in existing_ids:
+                        existing.append(option)
+
+        for option in parent_group.options.values():
+            self.options.setdefault(option.id, option)
 
     @override
     def iter_trans_tokens(self) -> Iterator[TransTokenSource]:

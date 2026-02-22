@@ -32,7 +32,7 @@ import trio
 from user_errors import (
     ErrorInfo, DATA_LOC, SERVER_INFO_FILE, ServerInfo, PackageTranslations,
     TOK_ERR_FAIL_LOAD, TOK_ERR_MISSING, TOK_COOP_SHOWURL,
-    TOK_WEBPAGE_ARCHIVE_INFO, TOK_WEBPAGE_ARCHIVE_BTN,
+    TOK_WEBPAGE_ARCHIVE_INFO, TOK_WEBPAGE_ARCHIVE_BTN, TOK_WEBPAGE_BUG_LINKS,
     TOK_WEBPAGE_TITLE_PREVIEW, TOK_WEBPAGE_TITLE_VBSP, TOK_WEBPAGE_TITLE_VRAD,
 )
 import utils
@@ -68,6 +68,7 @@ async def route_display_errors() -> str:
     return await quart.render_template(
         'index.html.jinja2',
         error_text=current_error.message.translate_html(),
+        bug_reports=TOK_WEBPAGE_BUG_LINKS.translate_html(),
         context=current_error.context,
         log_vbsp=LOGS['vbsp'],
         log_vrad=LOGS['vrad'],
@@ -137,7 +138,7 @@ async def route_static_js(filename: str) -> quart.ResponseReturnValue:
 async def route_shutdown() -> quart.ResponseReturnValue:
     """Called by the application to force us to shut down so this can be updated."""
     LOGGER.info('Recieved shutdown request!')
-    SHUTDOWN_SCOPE.cancel()
+    SHUTDOWN_SCOPE.cancel('shutdown request')
     await trio.lowlevel.checkpoint()
     return 'DONE'
 
@@ -228,7 +229,7 @@ async def check_portal2_running(allow_exit: trio.Event) -> None:
             LOGGER.info('Waiting for Portal 2 to quit...')
             await trio.to_thread.run_sync(proc_portal.wait)
         LOGGER.info('Portal 2 quit!')
-        SHUTDOWN_SCOPE.cancel()
+        SHUTDOWN_SCOPE.cancel('Portal 2 quit')
     except psutil.AccessDenied as exc:
         LOGGER.warning('Failed to detect if Portal 2 is closed:', exc_info=exc)
 
@@ -315,7 +316,7 @@ async def main(argv: list[str]) -> None:
             await trio.sleep_forever()
         LOGGER.info('Shutdown triggered.')
         # Allow nursery to exit.
-        stop_sleeping.cancel()
+        stop_sleeping.cancel('timeout')
 
     async def load_compiler(name: str) -> None:
         """Load a compiler log file."""

@@ -21,8 +21,8 @@ from PIL import ImageTk
 from ui_tk import TK_ROOT, tk_tools
 from app import img
 from ipc_types import (
-    ScreenID, StageID,
-    ARGS_SEND_LOAD, ARGS_REPLY_LOAD, ARGS_SEND_LOGGING,  ARGS_REPLY_LOGGING,
+    ScreenID, StageID, LoadTranslations,
+    ARGS_SEND_LOAD, ARGS_REPLY_LOAD, ARGS_SEND_LOGGING, ARGS_REPLY_LOGGING,
 )
 import ipc_types
 import utils
@@ -33,7 +33,9 @@ QUEUE_REPLY_LOAD: multiprocessing.Queue[ARGS_REPLY_LOAD]
 TIMEOUT = 0.125  # New iteration if we take more than this long.
 
 # Stores translated strings, which are done in the main process.
-TRANSLATION = {
+TRANSLATION: LoadTranslations[str] = {
+    'clear': 'Clear',
+    'copy': 'Copy',
     'skip': 'Skipped',
     'version': 'Version: 2.4.389',
     'cancel': 'Cancel',
@@ -42,6 +44,9 @@ TRANSLATION = {
     'level_debug': 'Debug',
     'level_info': 'Info',
     'level_warn': 'Warnings only',
+    'splash_title': 'Splash Screen: {title} by {author}',
+    'splash_title_author': 'Splash Screen: {title} by {author}',
+    'splash_author': 'Splash Screen by {author}',
 }
 
 SPLASH_FONTS = [
@@ -370,28 +375,43 @@ class SplashScreen(BaseLoadScreen):
             font=font,
         )
 
-        text1 = self.lrg_canvas.create_text(
-            10, 125,
-            anchor='nw',
-            text=self.title_text,
-            fill='white',
-            font=font,
-        )
-        text2 = self.lrg_canvas.create_text(
-            10, 145,
-            anchor='nw',
-            text=TRANSLATION['version'],
-            fill='white',
-            font=font,
-        )
+        texts = [
+            self.lrg_canvas.create_text(
+                10, 125,
+                anchor='nw',
+                text=self.title_text,
+                fill='white',
+                font=font,
+            ),
+            self.lrg_canvas.create_text(
+                10, 145,
+                anchor='nw',
+                text=TRANSLATION['version'],
+                fill='white',
+                font=font,
+            )
+        ]
+        splash_max_width = max(self.win.winfo_screenwidth() * 0.6, 500)
+        splash_max_height = max(self.win.winfo_screenheight() * 0.6, 500)
+        splash_img, splash_info = img.select_splash_image(splash_max_width, splash_max_height)
+        QUEUE_REPLY_LOAD.put(ipc_types.Daemon2Load_MainSetSplash(splash_info))
+        # We've picked, if info is set, add text for it.
+        splash_credits = splash_info.format_title(TRANSLATION)
+        if splash_credits:
+            texts.append(self.lrg_canvas.create_text(
+                10, 165,
+                anchor='nw',
+                text=splash_credits,
+                fill='white',
+                font=font,
+            ))
 
         # Now add shadows behind the text, and draw to the canvas.
         splash_img = img.make_splash_screen(
-            max(self.win.winfo_screenwidth() * 0.6, 500),
-            max(self.win.winfo_screenheight() * 0.6, 500),
+            splash_max_width, splash_max_height,
+            splash_img,
             base_height=len(self.stages) * 20,
-            text1_bbox=self.lrg_canvas.bbox(text1),
-            text2_bbox=self.lrg_canvas.bbox(text2),
+            text_bboxes=[self.lrg_canvas.bbox(text) for text in texts],
         )
         lrg_width, lrg_height = splash_img.size
         self.splash_img = ImageTk.PhotoImage(image=splash_img)  # Keep this alive
@@ -882,7 +902,7 @@ def run_background(
     queue_rec_log: multiprocessing.Queue[ARGS_SEND_LOGGING],
     queue_reply_log: multiprocessing.Queue[ARGS_REPLY_LOGGING],
     # Pass in various bits of translated text so, we don't need to do it here.
-    translations: dict[str, str],
+    translations: LoadTranslations[str],
 ) -> None:
     """Runs in the other process, with an end of a pipe for input."""
     global QUEUE_REPLY_LOAD

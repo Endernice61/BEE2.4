@@ -24,6 +24,10 @@ DEFAULT_WARN_DESC = TransToken.ui_plural(
     "An error occurred while performing this task, but it was partially successful:",
     "Multiple errors occurred while performing this task, but it was partially successful:",
 )
+TRANS_WARNING_SEP = TransToken.ui("The following warnings also occurred:")
+TRANS_TOO_MANY_ERRORS = TransToken.ui(
+    "Too many errors ({count}) occurred, display is incomplete. See log for full list."
+)
 
 
 class Result(Enum):
@@ -129,7 +133,7 @@ class ErrorUI:
             return Result.CANCELLED
         return Result.SUCCEEDED
 
-    def add(self, error: WarningExc | TransToken) -> None:
+    def add(self, error: WarningExc | TransToken, fatal: bool = False) -> None:
         """Log an error having occurred, while still continuing to run.
 
         The result will be PARTIAL at best.
@@ -138,13 +142,14 @@ class ErrorUI:
         """
         match error:
             case TransToken():
-                self._errors.append(AppError(error))
+                self._errors.append(AppError(error, fatal=fatal))
             case AppError():
+                error.fatal |= fatal
                 self._errors.append(error)
             case _:
                 matching, rest = error.split(AppError)
                 if matching is not None:
-                    self._errors.extend(_collapse_excgroup(matching, False))
+                    self._errors.extend(_collapse_excgroup(matching, fatal))
                 if rest is not None:
                     raise rest
 
@@ -160,6 +165,7 @@ class ErrorUI:
     ) -> bool:
         exc_wrapped = False
         if exc_val is not None:
+            LOGGER.debug('ErrorUI block:', exc_info=exc_val)
             if not isinstance(exc_val, BaseExceptionGroup):
                 # For simplicity, wrap so we can treat them the same.
                 exc_val = BaseExceptionGroup('', [exc_val])
@@ -197,23 +203,33 @@ class ErrorUI:
                     return False
 
         if self._errors:
+            if not self._fatal_error and any(err.fatal for err in self._errors):
+                self._fatal_error = True
+            self._errors.sort(key=lambda err: 0 if err.fatal else 1)
             desc = self.error_desc if self._fatal_error else self.warn_desc
             desc = desc.format(n=len(self._errors))
             # We had an error.
             if ErrorUI._handler is None:
                 LOGGER.error(
-                    "ErrorUI block failed, but no handler installed!\ntitle={}\ndesc={}\n{}",
+                    "ErrorUI block failed ({}x), but no handler installed!\ntitle={}\ndesc={}\n{}",
+                    len(self._errors),
                     self.title,
                     desc,
                     "\n".join([str(err.message) for err in self._errors]),
                 )
             else:
                 LOGGER.error(
-                    "ErrorUI block failed.\ntitle={}\ndesc={}\n{}",
+                    "ErrorUI block failed ({}x).\ntitle={}\ndesc={}\n{}",
+                    len(self._errors),
                     self.title,
                     desc,
                     "\n".join([str(err.message) for err in self._errors]),
                 )
                 # This is a class-level callable, do not pass self.
-                await ErrorUI._handler(self.title, desc, self._errors)
+                if len(self._errors) > 100:
+                    # If we have too many, UI perf suffers, and most of these aren't going to be useful.
+                    too_many = AppError(TRANS_TOO_MANY_ERRORS.format(count=len(self._errors)))
+                    await ErrorUI._handler(self.title, desc, [too_many, *self._errors[:10], too_many])
+                else:
+                    await ErrorUI._handler(self.title, desc, self._errors)
         return True

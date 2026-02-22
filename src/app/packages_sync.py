@@ -52,12 +52,21 @@ class SyncUIBase(ReflowWindow, abc.ABC):
         # First file -> package selector.
         self.pack_sort_by_id = AsyncBool()
         self.applies_to_all = AsyncBool()
+        self.applied_package: Package | None = None
         # Packages to pick from, in order.
         self.packages: list[Package] = []
+        # Location of P2, for simplifying file paths.
+        self.p2_loc: trio.Path | None = None
         self.selected_pack: EdgeTrigger[Package | None] = EdgeTrigger()
 
         self.can_confirm = AsyncBool(False)
         self.confirmed = trio.Event()
+
+    def evt_reset_apply_all(self, _: object = None) -> None:
+        """The action when the reset-applies button is pressed."""
+        self.applied_package = None
+        self.applies_to_all.value = False
+        self.ui_set_reset_applies(False, 'No auto package')
 
     async def pack_btn_task(self, /) -> None:
         """Handles marking buttons dirty whenever sorting changes."""
@@ -73,6 +82,27 @@ class SyncUIBase(ReflowWindow, abc.ABC):
         """Ask for the package this file should use."""
         self.ui_set_ask_pack(src, dest)
         return await self.selected_pack.wait()
+
+    def short_path(self, path: trio.Path) -> str:
+        """Simplify a path, if possible."""
+        if self.p2_loc is not None:
+            try:
+                relative = path.relative_to(self.p2_loc)
+            except ValueError:
+                pass
+            else:
+                if relative.is_relative_to('sdk_content/maps/'):
+                    return f'<portal2>:{relative.relative_to('sdk_content/maps/').as_posix()}'
+                elif relative.parts[0].casefold() in ('bee2', 'bee2_dev'):
+                    return f'<portal2>:{relative.relative_to(relative.parts[0]).as_posix()}'
+        for pack in self.packages:
+            try:
+                relative = path.relative_to(pack.path / 'resources')
+            except ValueError:
+                pass
+            else:
+                return f'<{pack.id}>:{relative.as_posix()}'
+        return str(path)
 
     @classmethod
     @abc.abstractmethod
@@ -91,13 +121,18 @@ class SyncUIBase(ReflowWindow, abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
+    def ui_set_reset_applies(self, enabled: bool, text: str, /) -> None:
+        """Set the button label for the applies-to-all reset button."""
+        raise NotImplementedError
+
+    @abc.abstractmethod
     def ui_add_confirm_file(self, src: trio.Path, dest: trio.Path, /) -> None:
         """Add a file to the big confirm list."""
         raise NotImplementedError
 
     @abc.abstractmethod
     def ui_reset(self, /) -> None:
-        """Reset the list of confirmed items, and the 'applies to all' checkbox."""
+        """Reset the list of confirmed items."""
         raise NotImplementedError
 
     @abc.abstractmethod
@@ -187,21 +222,32 @@ async def transfer_game2pack(
     except ValueError:
         rel_loc = PurePath('resources') / relative.relative_to(game_folder_bee)
 
-    ask_user = True
+    package_found = False
 
     for package in get_loaded_packages().packages.values():
         if not isinstance(package.fsys, RawFileSystem):
             # In a zip or the like.
             continue
         if str(rel_loc) in package.fsys:
-            ask_user = False
+            package_found = True
             await transfers.send((file, trio.Path(package.fsys.path, rel_loc)))
+            # Need to keep looping, could be in multiple.
+    if package_found:
+        return  # Done!
+    LOGGER.info('Need to ask user: file={}, applied={}, checkmark={}', rel_loc, ui.applied_package, ui.applies_to_all)
 
-    if ask_user:
-        # This file is totally new, need to ask the user.
+    # This file is totally new, need to ask the user.
+    if ui.applied_package is not None:
+        # User checked 'applies to all'.
+        await transfers.send((file, trio.Path(ui.applied_package.fsys.path, rel_loc)))
+    else:
         found = await ui.ask_package(file, rel_loc)
         if found is not None:
             await transfers.send((file, trio.Path(found.fsys.path, rel_loc)))
+            if ui.applies_to_all.value:
+                # Checkbox enabled, store that package.
+                ui.applied_package = found
+                ui.ui_set_reset_applies(True, f'Reset auto package: {found.disp_name}')
 
 
 def filter_filename(file_path: trio.Path) -> trio.Path | None:
@@ -270,6 +316,8 @@ async def main_gui(
 
     LOGGER.info('Done!')
     ui.packages = list(packset.packages.values())
+    ui.p2_loc = portal2_loc
+    ui.evt_reset_apply_all()  # Set the text.
     core_nursery.start_soon(ui.pack_btn_task)
 
     exp_file_send, exp_file_rec = trio.open_memory_channel[trio.Path](1)
@@ -301,8 +349,7 @@ async def main_gui(
 
     def do_copy(src: trio.Path, dest: trio.Path) -> None:
         print(f'Copy {src} -> {dest}')
-        with open(src, 'rb') as sf, open(dest, 'wb') as df:
-            shutil.copyfileobj(sf, df)
+        shutil.copyfile(src, dest)
 
     core_nursery.start_soon(delay_enable)
 
@@ -437,7 +484,7 @@ async def start_server(ui: SyncUIBase, core_nursery: trio.Nursery, files: list[s
         with app.QUIT_SCOPE:
             await main_gui(ui, core_nursery, rec_file)
         # Quit, shut down the server.
-        nursery.cancel_scope.cancel()
+        nursery.cancel_scope.cancel('ui quit')
 
 
 if __name__ == '__main__':

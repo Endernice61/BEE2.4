@@ -51,6 +51,8 @@ select = [
 	"TC008",  # Remove type alias quotes
 	"TC010",  # String in union.
 ]
+future-annotations = false
+typing-extensions = true
 external = ["ASYNC"]
 extend-ignore = [
 	"E201", "E202", "E203", "E221", "E222", "E241", # Allow extra whitespace.
@@ -71,6 +73,7 @@ extend-ignore = [
 	"RUF027",  # Catches TransToken using {}-formatting without an f-string.
 	"RUF052",  # _var is sometimes a parameter, not dummy.
 	"RUF100",  # Sometimes use # noqa for other linters
+	"RUF067",  # Often have code in __init__
 
 	# PyLint:
 	"PLW0603",  # Allow use of global statement.
@@ -103,6 +106,9 @@ extend-ignore = [
 allowed-confusables = [
 	"×",  # Multiplication sign
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"**.pyi" = ["FURB"]
 
 [tool.ruff.lint.pyupgrade]
 keep-runtime-typing = true
@@ -149,14 +155,14 @@ warn_unused_ignores = true
 warn_redundant_casts = true
 warn_return_any = true
 warn_no_return = true
-# warn_unreachable = true  # TODO: Bunch of errors still
+warn_unreachable = true  # TODO: Bunch of errors still
 
 disallow_incomplete_defs = true
 disallow_untyped_defs = true
 disallow_untyped_decorators = true
-#disallow_untyped_calls = true
-disallow_any_generics = false
-#untyped_calls_exclude = ["tkinter", "tkinter.ttk"]
+disallow_untyped_calls = true
+disallow_any_generics = true
+untyped_calls_exclude = ["tkinter", "tkinter.ttk"]
 
 enable_error_code = [
 	'comparison-overlap',
@@ -172,13 +178,13 @@ enable_error_code = [
 	'unimported-reveal',
 	'unreachable',
 	'unused-awaitable',
+	'exhaustive-match',
 #	'explicit-override',
 ]
 
 [[tool.mypy.overrides]]
 # TODO: make these pass strict checks.
 module = [
-	'app.backup',
 	'precomp.bottomlessPit',
 	'ui_tk.check_table',
 ]
@@ -199,3 +205,10 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ['precomp.conditions.cutoutTile', 'postcomp._ha_transforms.*']
 ignore_errors = true
+
+[tool.ty.environment]
+root = ["./src", "./hammeraddons/src"]
+
+[tool.ty.src]
+include = ["src", "tests"]
+exclude = ["src/postcomp/_ha_transforms"]

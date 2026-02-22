@@ -103,6 +103,7 @@ async def step_signage(exp_data: ExportData) -> None:
         # Special case, arrow is never selectable, but must always be exported.
         ('arrow', 'SIGN_ARROW'),
     ]
+    LOGGER.debug('Beginning signage export: {}', sel_ids)
 
     sel_icons: dict[int, ImgHandle] = {}
 
@@ -145,10 +146,16 @@ async def step_signage(exp_data: ExportData) -> None:
         # Valid timer number, store to be placed on the texture.
         if tim_id.isdigit() and sty_sign is not None:
             sel_icons[int(tim_id)] = sty_sign.icon
+            LOGGER.debug('{} = {}', tim_id, sty_sign)
+        else:
+            LOGGER.debug('{} = N/A', tim_id)
 
     if errors:
         raise ExceptionGroup('Signage Export', errors)
 
+    exp_data.vbsp_conf.append(conf)
+
+    LOGGER.debug('Loading connection icons...')
     fsys = await trio.to_thread.run_sync(exp_data.game.get_filesystem)
 
     async with trio.open_nursery() as nursery:
@@ -159,7 +166,6 @@ async def step_signage(exp_data: ExportData) -> None:
             )
             for ind, shape in enumerate(EDITOR_SHAPES)
         }
-    exp_data.vbsp_conf.append(conf)
 
     legend_obj: SignageLegend | None = None
     for style in exp_data.selected_style.bases:
@@ -181,6 +187,7 @@ async def step_signage(exp_data: ExportData) -> None:
     sign_ant_path = Path(exp_data.game.abs_path(SIGN_ANT_LOC))
 
     exp_data.resources |= {sign_path, sign_ant_path}
+    LOGGER.debug('Legend: {}', legend_obj)
     async with trio.open_nursery() as nursery:
         nursery.start_soon(
             trio.to_thread.run_sync, make_legend,
@@ -190,6 +197,7 @@ async def step_signage(exp_data: ExportData) -> None:
             trio.to_thread.run_sync, make_legend,
             exp_data, sign_ant_path, ant_icons, legend_obj, True,
         )
+    LOGGER.debug('Complete!')
 
 
 def iter_sign_cells() -> Iterator[tuple[int, int, int]]:
@@ -309,7 +317,8 @@ def make_legend(
         legend = Image.alpha_composite(legend, overlay)
     assert legend.size == LEGEND_SIZE, legend
     assert legend.mode == 'RGBA', legend
-    vtf = VTF(*LEGEND_SIZE, fmt=ImageFormats.DXT5)
+    # No point compressing, it's only on the user's disk.
+    vtf = VTF(*LEGEND_SIZE, fmt=ImageFormats.RGBA8888)
     vtf.get().copy_from(legend.tobytes(), ImageFormats.RGBA8888)
     vtf.clear_mipmaps()
     vtf.flags |= VTFFlags.ANISOTROPIC
@@ -319,13 +328,4 @@ def make_legend(
     LOGGER.info('Writing {}...', sign_path)
 
     with sign_path.open('wb') as f:
-        try:
-            vtf.save(f)
-        except NotImplementedError:
-            LOGGER.warning('No DXT compressor, using BGRA8888.')
-            # No libsquish, so DXT compression doesn't work.
-            vtf.format = vtf.low_format = ImageFormats.BGRA4444
-
-            f.truncate(0)
-            f.seek(0)
-            vtf.save(f)
+        vtf.save(f)

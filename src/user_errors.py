@@ -6,6 +6,7 @@ from typing import ClassVar, Literal, TypedDict
 
 from collections.abc import Collection, Iterable
 from pathlib import Path
+import html
 
 from srctools import FrozenVec, Vec, logger
 import attrs
@@ -61,7 +62,8 @@ class ErrorInfo:
     language_file: Path | None = None
     # Logging context
     context: str = ''
-    faces: dict[Kind, list[SimpleTile]] = attrs.Factory(dict)
+    # Copy of the tiledef data, so we can preview the level. Disable repr, this is massive.
+    faces: dict[Kind, list[SimpleTile]] = attrs.field(factory=dict, repr=False)
     # Voxels of interest in the map.
     voxels: list[TuplePos] = attrs.Factory(list)
     # Points of interest in the map.
@@ -135,14 +137,14 @@ class UserError(BaseException):
         """
         if utils.DEV_MODE:
             try:
-                ctx = f'Error occured in: <code>{", ".join(logger.CTX_STACK.get())}</code>'
+                ctx = ", ".join(logger.CTX_STACK.get())
             except LookupError:
                 ctx = ''
+            else:
+                if ctx:
+                    ctx = f'Error occured in: <code>{html.escape(ctx)}</code>'
         else:
             ctx = ''
-
-        if isinstance(message, str):  # Temporary, prevent this breaking.
-            message = TransToken.untranslated(message)
 
         if leakpoints:
             textlist = [f'({point})' for point in leakpoints]
@@ -174,7 +176,7 @@ class UserError(BaseException):
         )
 
     def __str__(self) -> str:
-        return f'Error message: {self.info.message!r}'
+        return repr(self.info)
 
 
 # Define a translation token for every error message that can be produced. The app will translate
@@ -187,6 +189,15 @@ TOK_COOP_SHOWURL = TransToken.ui(
 )
 
 # Used to format the webpage
+TOK_WEBPAGE_BUG_LINKS = TransToken.ui(
+    'You can submit bug reports here for <a href="{packages}">default items</a>, '
+    '<a href="{music}">music</a> or the <a href="{app}">compiler</a>.'
+).format(
+    # Linking to the new-issue page requires a login, more friendly to show current issues.
+    packages='https://github.com/BEEmod/BEE2-items/issues',
+    app='https://github.com/BEEmod/BEE2.4/issues/',
+    music='https://github.com/BEEmod/BEE2-music/issues',
+)
 TOK_WEBPAGE_ARCHIVE_INFO = TransToken.ui(
     'If submitting a bug report, please include this map archive. It contains your level, '
     'the displayed preview, relevant log files and configs to help with identifying the issue. '
@@ -239,6 +250,11 @@ TOK_VBSP_MISSING_INSTANCE = TransToken.ui(
     'Try other configurations for this item, it may be the case that only some are missing.',
 )
 
+TOK_MARKER_INST_PERSISTS = TransToken.ui(
+    'The following "marker" items remain present in the map. This indicates an error in the '
+    'item\'s configuration, these should have been replaced or removed.'
+)
+
 TOK_GLASS_FLOORBEAM_TEMPLATE = TransToken.ui(
     'Bad Glass Floorbeam template! The template must have a single brush, aligned along the '
     '<var>X</var> axis.'
@@ -252,11 +268,6 @@ TOK_CONNECTION_REQUIRED_ITEM = TransToken.ui(
 TOK_CONNECTIONS_UNKNOWN_INSTANCE = TransToken.ui(
     'The instance named "<var>{item}</var>" is not recognised! If you just swapped styles and '
     'exported, you will need to restart Portal 2. Otherwise check the relevant package.'
-)
-
-TOK_CONNECTIONS_INSTANCE_NO_IO = TransToken.ui(
-    'The instance "<var>{inst}</var>" is reciving inputs, but none were configured in the item. '
-    'Check for reuse of the instance in multiple items, or restart Portal 2 if you just exported.'
 )
 
 TOK_CORRIDOR_EMPTY_GROUP = TransToken.ui(

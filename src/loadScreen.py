@@ -6,7 +6,7 @@ the main process is busy loading.
 The id() of the main-process object is used to identify loadscreens.
 """
 from __future__ import annotations
-from typing import Self, assert_never
+from typing import Self, cast
 
 from collections.abc import (
     AsyncGenerator, Collection, Generator, MutableMapping,
@@ -16,6 +16,7 @@ from weakref import WeakValueDictionary
 import contextlib
 import multiprocessing
 
+from trio_util import AsyncValue
 import attrs
 import srctools.logger
 import trio
@@ -40,7 +41,7 @@ _QUEUE_REPLY_LOGGING: multiprocessing.Queue[ipc_types.ARGS_REPLY_LOGGING] = mult
 
 LOGGER = srctools.logger.get_logger(__name__)
 # All tokens used by the subprocess. We translate here before passing it down.
-TRANSLATIONS = {
+TRANSLATIONS: ipc_types.LoadTranslations[TransToken] = {
     'skip': TransToken.ui('Skipped!'),
     'version': TransToken.ui('Version: {ver}').format(ver=utils.BEE_VERSION),
     'cancel': TransToken.ui('Cancel'),
@@ -51,7 +52,20 @@ TRANSLATIONS = {
     'level_debug': TransToken.ui('Debug messages'),
     'level_info': TransToken.ui('Default'),
     'level_warn': TransToken.ui('Warnings Only'),
+    'splash_title': TransToken.ui('Splash Screen: {title} by {author}'),
+    'splash_title_author': TransToken.ui('Splash Screen: {title} by {author}'),
+    'splash_author': TransToken.ui('Splash Screen by {author}'),
 }
+# The splash that was displayed, sent back from the screen.
+selected_splash = AsyncValue(ipc_types.SplashInfo('', '', None))
+
+
+def _send_load(value: ipc_types.ARGS_SEND_LOAD) -> None:
+    """Send to the loading queue, suppressing errors."""
+    try:
+        _QUEUE_SEND_LOAD.put(value)
+    except ValueError:
+        LOGGER.warning('Loading screen queue closed when sending: {}', value)
 
 
 def show_main_loader(is_compact: bool, app_scope: trio.CancelScope) -> None:
@@ -60,14 +74,14 @@ def show_main_loader(is_compact: bool, app_scope: trio.CancelScope) -> None:
     This sets the splash screen compactness, and also passes in the main app's cancel scope,
     so we can cancel the whole thing if this is quit.
     """
-    _QUEUE_SEND_LOAD.put(ipc_types.Load2Daemon_SetIsCompact(main_loader.id, is_compact))
+    _send_load(ipc_types.Load2Daemon_SetIsCompact(main_loader.id, is_compact))
     main_loader._show()
     main_loader._scope = app_scope
 
 
 def set_force_ontop(ontop: bool) -> None:
     """Set whether screens will be forced on top."""
-    _QUEUE_SEND_LOAD.put(ipc_types.Load2Daemon_SetForceOnTop(ontop))
+    _send_load(ipc_types.Load2Daemon_SetForceOnTop(ontop))
 
 
 @contextlib.contextmanager
@@ -77,8 +91,12 @@ def suppress_screens() -> Generator[None, None, None]:
     for screen in _ALL_SCREENS.values():
         if not screen.active:
             continue
-        screen.suppress()
-        active.append(screen)
+        try:
+            screen.suppress()
+        except ValueError:
+            pass  # Can happen if the queue is closed.
+        else:
+            active.append(screen)
     try:
         yield None
     finally:
@@ -101,7 +119,7 @@ class ScreenStage:
         await trio.lowlevel.checkpoint()
         self._max = num
         for screen in list(self._bound):
-            _QUEUE_SEND_LOAD.put(ipc_types.Load2Daemon_SetLength(screen.id, self.id, num))
+            _send_load(ipc_types.Load2Daemon_SetLength(screen.id, self.id, num))
 
     async def step(self, info: object = None) -> None:
         """Increment one step."""
@@ -109,14 +127,14 @@ class ScreenStage:
         self._current += 1
         self._skipped = False
         for screen in list(self._bound):
-            _QUEUE_SEND_LOAD.put(ipc_types.Load2Daemon_Set(screen.id, self.id, self._current))
+            _send_load(ipc_types.Load2Daemon_Set(screen.id, self.id, self._current))
 
     def reset(self) -> None:
         """Reset the current value."""
         self._current = 0
         self._skipped = False
         for screen in list(self._bound):
-            _QUEUE_SEND_LOAD.put(ipc_types.Load2Daemon_Set(screen.id, self.id, self._current))
+            _send_load(ipc_types.Load2Daemon_Set(screen.id, self.id, self._current))
 
     async def skip(self) -> None:
         """Skip this stage."""
@@ -124,7 +142,7 @@ class ScreenStage:
         self._current = 0
         self._skipped = True
         for screen in list(self._bound):
-            _QUEUE_SEND_LOAD.put(ipc_types.Load2Daemon_Skip(screen.id, self.id))
+            _send_load(ipc_types.Load2Daemon_Skip(screen.id, self.id))
 
     async def iterate[T](self, seq: Collection[T]) -> AsyncGenerator[T, None]:
         """Tie the progress of a stage to a sequence of some kind."""
@@ -169,7 +187,7 @@ class LoadScreen:
         self.cancelled = False
 
         # Order the daemon to make this screen. We pass translated text in for the splash screen.
-        _QUEUE_SEND_LOAD.put(ipc_types.Load2Daemon_Init(
+        _send_load(ipc_types.Load2Daemon_Init(
             scr_id=self.id,
             is_splash=is_splash,
             title=str(title_text),
@@ -220,7 +238,7 @@ class LoadScreen:
         LOGGER.debug('Exiting screen {!r}, cancelled={}', self.title, self.cancelled)
         try:
             self.active = False
-            _QUEUE_SEND_LOAD.put(ipc_types.Load2Daemon_Reset(self.id))
+            _send_load(ipc_types.Load2Daemon_Reset(self.id))
             for stage in self.stages:
                 stage.warn_if_incomplete(self.title)
                 stage._bound.discard(self)
@@ -250,7 +268,7 @@ class LoadScreen:
         self.active = True
         # Translate and send across the titles now.
         # noinspection PyProtectedMember
-        _QUEUE_SEND_LOAD.put(ipc_types.Load2Daemon_Show(
+        _send_load(ipc_types.Load2Daemon_Show(
             self.id, str(self.title),
             [
                 (str(stage.title), stage._max)
@@ -263,7 +281,7 @@ class LoadScreen:
     def destroy(self) -> None:
         """Permanently destroy this screen and cleanup."""
         self.active = False
-        _QUEUE_SEND_LOAD.put(ipc_types.Load2Daemon_Destroy(self.id))
+        _send_load(ipc_types.Load2Daemon_Destroy(self.id))
         for stage in self.stages:
             stage.warn_if_incomplete(self.title)
             stage._bound.discard(self)
@@ -272,13 +290,13 @@ class LoadScreen:
     def suppress(self) -> None:
         """Temporarily hide the screen."""
         self.active = False
-        _QUEUE_SEND_LOAD.put(ipc_types.Load2Daemon_Hide(self.id))
+        _send_load(ipc_types.Load2Daemon_Hide(self.id))
 
     def unsuppress(self) -> None:
         """Undo temporarily hiding the screen."""
         self.active = True
         # noinspection PyProtectedMember
-        _QUEUE_SEND_LOAD.put(ipc_types.Load2Daemon_Show(
+        _send_load(ipc_types.Load2Daemon_Show(
             self.id, str(self.title),
             [
                 (str(stage.title), stage._max)
@@ -291,9 +309,10 @@ async def _update_translations() -> None:
     """Update the translations whenever the language changes."""
     while True:
         await CURRENT_LANG.wait_transition()
-        _QUEUE_SEND_LOAD.put(ipc_types.Load2Daemon_UpdateTranslations(
-            {key: str(tok) for key, tok in TRANSLATIONS.items()},
-        ))
+        _send_load(ipc_types.Load2Daemon_UpdateTranslations(cast(
+            ipc_types.LoadTranslations[str],
+            {key: str(tok) for key, tok in TRANSLATIONS.items()}
+        )))
 
 
 async def _listen_to_process() -> None:
@@ -306,6 +325,8 @@ async def _listen_to_process() -> None:
                 # Save the compact state to the config.
                 conf = APP.get_cur_conf(GenOptions)
                 APP.store_conf(attrs.evolve(conf, compact_splash=op.compact))
+            case ipc_types.Daemon2Load_MainSetSplash():
+                selected_splash.value = op.info
             case ipc_types.Daemon2Load_Cancel():
                 try:
                     screen = _ALL_SCREENS[op.screen]
@@ -314,9 +335,7 @@ async def _listen_to_process() -> None:
                 else:
                     LOGGER.info('Cancelling load screen {!r}, scope={}', screen.title, screen._scope)
                     if screen._scope is not None:
-                        screen._scope.cancel()
-            case _:
-                assert_never(op)
+                        screen._scope.cancel('user pressed cancel')
 
 
 _bg_started = False

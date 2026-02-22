@@ -29,7 +29,7 @@ closure.
 """
 from __future__ import annotations
 
-from typing import Protocol, Any, Final, overload, cast, get_type_hints
+from typing import Protocol, Any, Final, overload, cast, get_type_hints, ClassVar
 from collections.abc import Callable, Iterable, Mapping, MutableMapping
 from collections import defaultdict
 from decimal import Decimal
@@ -46,7 +46,7 @@ import types
 import warnings
 
 from srctools.math import FrozenAngle, Vec, FrozenVec, AnyAngle, AnyMatrix, Angle
-from srctools.vmf import EntityGroup, VMF, Entity, Output, Solid, ValidKVs
+from srctools.vmf import VMF, Entity, Output, Solid, ValidKVs
 from srctools import Keyvalues
 import attrs
 import srctools.logger
@@ -57,6 +57,8 @@ from precomp.collisions import Collisions
 from precomp.corridor import Info as MapInfo
 from quote_pack import QuoteInfo
 import consts
+import editoritems
+import user_errors
 import utils
 
 
@@ -68,9 +70,11 @@ __all__ = [
     'add_inst', 'add_suffix', 'add_output', 'local_name', 'fetch_debug_visgroup', 'set_ent_keys',
     'resolve_offset',
 ]
+
+
 COND_MOD_NAME = 'Main Conditions'
 
-LOGGER = srctools.logger.get_logger(__name__, alias='cond.core')
+LOGGER = srctools.logger.get_logger('conditions', alias='cond.core')
 
 # The global instance filenames we add.
 GLOBAL_INSTANCES: set[str] = set()
@@ -554,6 +558,10 @@ class CondCall[CallResultT]:
         CallResultT | Callable[[Entity], CallResultT],
     ] = attrs.field(init=False)
 
+    # The entity should never be used in setup functions. Pass a dummy object
+    # so errors occur if it's used.
+    _DUMMY_ENT: ClassVar[Entity] = cast(Entity, cast(object, 'SetupHasNoEntity'))
+
     def __attrs_post_init__(self) -> None:
         cback, arg_order = annotation_caller(
             self.func,
@@ -583,30 +591,31 @@ class CondCall[CallResultT]:
         conf: Keyvalues,
     ) -> CallResultT:
         """Execute the callback."""
+        cback: Callable[[Entity], CallResultT] | CallResultT
         if self._setup_data is None:
+            # As mentioned below, there isn't a setup function, so this must be a valid result.
             return self._cback(ent.map, coll, info, voice, ent, conf)  # type: ignore
         else:
             # Execute setup functions if required.
-            if id(conf) in self._setup_data:
+            try:
                 cback = self._setup_data[id(conf)]
+            except KeyError:
+                pass  # First call, try calling as a setup function.
+                # Do this outside the try: so we don't chain exceptions.
             else:
-                # The entity should never be used in setup functions. Pass a dummy object
-                # so errors occur if it's used.
-                cback = self._setup_data[id(conf)] = self._cback(  # type: ignore
-                    ent.map, coll, info, voice,
-                    cast(Entity, object()),
-                    conf,
-                )
+                return cback(ent)
 
-            if not callable(cback):
+            cback = self._cback(ent.map, coll, info, voice, self._DUMMY_ENT, conf)
+            if callable(cback):
+                self._setup_data[id(conf)] = cback
+                return cback(ent)
+            else:
                 # We don't actually have a setup func,
                 # this func just doesn't care about entities.
                 # Fix this incorrect assumption, then return
                 # the result.
                 self._setup_data = None
                 return cback
-
-            return cback(ent)
 
 
 def _get_cond_group(func: Any) -> str | None:
@@ -819,14 +828,6 @@ def check_all(
             # Suppress errors for future conditions.
             ALL_INST.update(extra)
 
-    # Clear out any blank instances. This allows code elsewhere to have a convenient way
-    # to just delete instances.
-    for inst in vmf.by_class['func_instance']:
-        # If editoritems instances are set to "", PeTI will autocorrect it to
-        # ".vmf" - we need to handle that too.
-        if inst['file'].casefold() in ('', '.vmf'):
-            inst.remove()
-
     LOGGER.info('---------------------')
     LOGGER.info(
         'Conditions executed, {}/{} ({:.0%}) skipped!',
@@ -898,6 +899,32 @@ def check_test(
         return res is desired_result
 
 
+def cleanup_instances(vmf: VMF) -> None:
+    """Destroy any blank instances, and check for markers still being present."""
+    marker_items: set[tuple[utils.ObjectID, int]] = set()
+    marker_fnames: set[str] = set()
+    marker_pos: list[Vec] = []
+    for inst in vmf.by_class['func_instance']:
+        # If editoritems instances are set to "", PeTI will autocorrect it to
+        # ".vmf" - we need to handle that too.
+        fname = inst['file']
+        if fname.casefold() in ('', '.vmf'):
+            inst.remove()
+            continue
+        tup = editoritems.InstCount.parse_marker(editoritems.FSPath(fname))
+        if tup is not None:
+            marker_items.add(tup)
+            marker_fnames.add(fname)
+            marker_pos.append(Vec.from_str(inst['origin']))
+    if marker_items:
+        LOGGER.error('Marker instances: {}', marker_fnames)
+        raise user_errors.UserError(
+            user_errors.TOK_MARKER_INST_PERSISTS,
+            textlist=[f'{fname} (#{ind})' for fname, ind in marker_items],
+            voxels=marker_pos,
+        )
+
+
 def import_conditions() -> None:
     """Import all the components of the conditions package.
 
@@ -932,17 +959,6 @@ def import_conditions() -> None:
 
 DOC_MARKER = '''<!-- Only edit above this line. This is generated from text in the compiler code. -->'''
 
-DOC_META_COND = '''
-
-### Meta-Conditions
-
-Metaconditions are conditions run automatically by the compiler. These exist
-so package conditions can choose a priority to run before or after these 
-operations.
-
-
-'''
-
 SPECIAL_GROUP = '00special'
 DOC_SPECIAL_GROUP = '''\
 ### Specialized Conditions
@@ -975,20 +991,15 @@ async def dump_conditions(filename: trio.Path) -> None:
             await file.write(line)
         await file.write('\n')
 
-        for test_key, priority, func in ALL_META:
-            await file.write(f'#### `{test_key}` ({priority.value}):\n\n')
-            await file.write(dump_func_docs(func))
-            await file.write('\n\n')
+        await file.write('## Table of Contents:')
 
         all_cond_types: list[tuple[list[tuple[str, tuple[str, ...], CondCall[Any]]], str]] = [
             (ALL_TESTS, 'Tests'),
             (ALL_RESULTS, 'Results'),
         ]
+        # Store the organised conditions, so we can write the table of contents first.
+        groups = []
         for lookup, type_name in all_cond_types:
-            await file.write('<!------->\n')
-            await file.write(f'## {type_name}\n')
-            await file.write('<!------->\n')
-
             lookup_grouped: dict[str, list[
                 tuple[str, tuple[str, ...], CondCall[Any]]
             ]] = defaultdict(list)
@@ -1008,7 +1019,7 @@ async def dump_conditions(filename: trio.Path) -> None:
             if not lookup_grouped['']:
                 del lookup_grouped['']
 
-            await file.write('\n<details open>\n<summary>Table Of Contents</summary>\n\n')
+            await file.write(f'\n<details open>\n<summary>{type_name}</summary>\n\n')
             for (group, funcs) in sorted(lookup_grouped.items()):
                 if group == '':
                     await file.write('* Ungrouped Conditions\n')
@@ -1022,7 +1033,21 @@ async def dump_conditions(filename: trio.Path) -> None:
                         f'\t* [{names}](#beecond-{type_name.casefold()}-{test_key.casefold()})\n'
                     )
             await file.write('</details>\n\n')
+            groups.append(lookup_grouped)
 
+        await file.write('-' * 32 + '\n')
+
+        await file.write('## Meta-Conditions:\n\n')
+
+        for test_key, priority, func in ALL_META:
+            await file.write(f'#### `{test_key}` ({priority.value}):\n\n')
+            await file.write(dump_func_docs(func))
+            await file.write('\n\n')
+
+        for (lookup, type_name), lookup_grouped in zip(all_cond_types, groups, strict=True):
+            await file.write('<!------->\n')
+            await file.write(f'## {type_name}\n')
+            await file.write('<!------->\n')
             for header_ind, (group, funcs) in enumerate(sorted(lookup_grouped.items())):
                 if group == '':
                     group = 'Ungrouped Conditions'
@@ -1277,8 +1302,6 @@ def fetch_debug_visgroup(
         # Create the visgroup.
         visgroup = vmf.create_visgroup(vis_name, (r, g, b))
 
-    group = EntityGroup(vmf, color=Vec(r, g, b), shown=False)
-
     def adder(target: str | Entity | Solid, /, **kwargs: ValidKVs) -> Entity | Solid:
         """Add a marker to the map."""
         if isinstance(target, str):
@@ -1291,10 +1314,6 @@ def fetch_debug_visgroup(
             vmf.add_ent(target)
 
         target.visgroup_ids.add(visgroup.id)
-        if isinstance(target, Solid):
-            target.group_id = group.id
-        else:
-            target.groups.add(group.id)
         target.vis_shown = False
         target.hidden = True
         return target

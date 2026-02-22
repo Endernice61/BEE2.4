@@ -28,7 +28,7 @@ BLANK: Final[LazyConf] = _blank_prop
 
 def raw_prop(block: Keyvalues, source: str = '') -> LazyConf:
 	"""Make an existing property conform to the interface."""
-	if block or block.name is not None:
+	if block or not block.is_root():
 		if source:
 			async def copy_with_source() -> Keyvalues:
 				"""Copy the config, then apply the source."""
@@ -123,7 +123,7 @@ def replace(base: LazyConf, replacements: list[tuple[re.Pattern[str], str]]) -> 
 		copy = await base()
 		for prop in copy.iter_tree():
 			name = prop.real_name
-			if name is not None:
+			if not prop.is_root():
 				for func in rep_funcs:
 					name = func(name)
 				prop.name = name

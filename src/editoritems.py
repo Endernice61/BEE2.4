@@ -1,6 +1,6 @@
 """Parses the Puzzlemaker's item format."""
 from __future__ import annotations
-from typing import ClassVar, Protocol, Any
+from typing import ClassVar, Protocol, Any, Final
 
 from operator import itemgetter
 import string
@@ -38,6 +38,7 @@ type _SubTypeState = tuple[
     TransToken, list[str], list[str], list[int],
     TransToken, int, int, FSPath | None,
 ]
+EMPTY_FNAME: Final = FSPath()
 
 
 class ItemClass(Enum):
@@ -325,11 +326,36 @@ class Connection:
 @attrs.define
 class InstCount:
     """Instances have several associated counts."""
+    MARKER_KEY: ClassVar[str] = '<marker>'
+    MARKER_FOLDER: ClassVar[str] = 'instances/bee2_marker/'
+
     # The actual filename.
     inst: FSPath = attrs.field(converter=FSPath)
     ent_count: int = 0
     brush_count: int = 0
     face_count: int = 0
+    # If set, this is an auto-generated filename.
+    is_marker: bool = attrs.field(kw_only=True, default=False)
+
+    @property
+    def is_blank(self) -> bool:
+        """Whether the filename is blank, indicating the instance should be discarded."""
+        return self.inst == EMPTY_FNAME
+
+    @classmethod
+    def marker_fname(cls, item_id: utils.ObjectID, ind: int) -> FSPath:
+        """Produce the marker filename for an item and index."""
+        return FSPath(cls.MARKER_FOLDER, item_id.casefold(), f'{ind}.vmf')
+
+    @classmethod
+    def parse_marker(cls, fname: FSPath) -> tuple[utils.ObjectID, int] | None:
+        """If this filename is for a marker, return the original item ID and instance index."""
+        parts = fname.parts
+        if len(parts) != 4 or parts[0].casefold() != "instances" or parts[1] != "bee2_marker":
+            return None
+        item_id = utils.obj_id(parts[2])
+        index = conv_int(parts[3].casefold().removesuffix(".vmf"))
+        return item_id, index
 
 
 @attrs.frozen
@@ -877,8 +903,8 @@ class SubType:
 @attrs.define
 class Item:
     """A specific item."""
-    # The item's unique ID. Can be blank, if the info.txt ID should override.
-    id: utils.ObjectID | utils.BlankID = utils.ID_EMPTY
+    # The item's unique ID. Can be blank in file, to explicitly ask the info.txt ID should override.
+    id: utils.ObjectID
     # The C++ class used to instantiate the item in the editor.
     cls: ItemClass = ItemClass.UNCLASSED
     # Type if present.
@@ -1034,15 +1060,17 @@ class Item:
         return items, icons
 
     @classmethod
-    def parse_one(cls, tok: Tokenizer, pak_id: utils.ObjectID) -> Item:
+    def parse_one(cls, tok: Tokenizer, pak_id: utils.ObjectID, info_id: utils.ObjectID | None = None) -> Item:
         """Parse an item.
 
         This expects the "Item" token to have been read already.
+        If info_id is provided, this overrides blank IDs.
         """
-        item_id_set = False
         connections = Keyvalues('Connections', [])
         tok.expect(Token.BRACE_OPEN)
-        item = Item()
+        # Initially invalid ID, we check before returning this at the end.
+        item_id_set = False
+        item = Item(utils.obj_id('_'))
 
         for token, tok_value in tok:
             if token is Token.BRACE_CLOSE:
@@ -1057,7 +1085,17 @@ class Item:
                 if item_id_set:
                     raise tok.error('Item ID (Type) set multiple times!')
                 # Allow explicitly setting a blank ID, to use the object ID.
-                item.id = utils.obj_id_optional(tok.expect(Token.STRING), 'Item')
+                item_id = utils.obj_id_optional(tok.expect(Token.STRING), 'Item')
+                if item_id == '':
+                    if info_id is not None:
+                        item.id = info_id
+                    else:
+                        raise tok.error(
+                            'Blank Item ID (Type) provided, but ID cannot be inferred! '
+                            'Only IDs for the first/primary item in Item objects can default.'
+                        )
+                else:
+                    item.id = item_id
                 item_id_set = True
                 # The items here are used internally and must have inputs.
                 if item.id in ANTLINE_ITEMS:
@@ -1082,7 +1120,7 @@ class Item:
         else:
             raise tok.error('File ended without closing item block!')
 
-        # Done, check we're not missing critical stuff.
+        # Done, check we're not missing critical stuff, process things which need all data available.
         if not item_id_set:
             raise tok.error('No item ID ("type") set!')
 
@@ -1094,12 +1132,28 @@ class Item:
             except KeyError:
                 LOGGER.warning('Subtype property of "{}" set, but property not present!', prop_name)
 
+        # Now we have the item ID, set the marker filenames.
+        for ind, inst in enumerate(item.instances):
+            if inst.is_marker:
+                inst.inst = InstCount.marker_fname(item.id, ind)
+
         # Parse the connection info, if it exists.
         if connections or item.conn_inputs or item.conn_outputs:
             item.conn_config = ConnConfig.parse(item.id or utils.obj_id(pak_id), connections)
             item._finalise_connections()
             if 'activate' in connections or 'deactivate' in connections:
                 LOGGER.warning('', exc_info=tok.error('Output activate/deactivate commands need out_ prefix!'))
+
+            if item.cls is ItemClass.TRACK_PLATFORM and item.targetname != 'raillift':
+                # Track platforms have some special logic for their antline connections, which causes
+                # inputs to stop working if the ent isn't named exactly this. Don't warn if the item
+                # doesn't have connections though.
+                LOGGER.warning(
+                    'Track platform "{}" has targetname="{}", '
+                    'but this must be set to "raillift" for connections to function. Changing.',
+                    item.id, item.targetname,
+                )
+                item.targetname = 'raillift'
         return item
 
     # Boolean option in editor -> Item attribute.
@@ -1217,35 +1271,37 @@ class Item:
         passed-in keyvalues block for later parsing.
         """
         for key in tok.block('Exporting'):
-            folded_key = key.casefold()
-            if folded_key == 'targetname':
-                self.targetname = tok.expect(Token.STRING)
-            elif folded_key == 'offset':
-                self.offset = Vec.from_str(tok.expect(Token.STRING))
-            elif folded_key == 'instances':
-                # We allow several syntaxes for instances, since the counts are
-                # pretty useless. Instances can be defined by position (for originals),
-                # or by name for use in conditions.
-                for inst_name in tok.block('Instance'):
-                    self._parse_instance_block(tok, inst_name)
-            elif folded_key == 'connectionpoints':
-                self._parse_connection_points(tok)
-            elif folded_key == 'occupiedvoxels':
-                self._parse_occupied_voxels(tok)
-            elif folded_key == 'embeddedvoxels':
-                self._parse_embedded_voxels(tok)
-            elif folded_key == 'collisions':
-                self._parse_collisions(tok)
-            elif folded_key == 'embedface':
-                self._parse_embed_faces(tok)
-            elif folded_key == 'overlay':
-                self._parse_overlay(tok)
-            elif folded_key == 'inputs':
-                self._parse_connections(tok, connections, self.conn_inputs)
-            elif folded_key == 'outputs':
-                self._parse_connections(tok, connections, self.conn_outputs)
-            else:
-                raise tok.error('Unknown export option {}!', key)
+            match key.casefold():
+                case 'targetname':
+                    self.targetname = tok.expect(Token.STRING)
+                case 'offset':
+                    self.offset = Vec.from_str(tok.expect(Token.STRING))
+                case 'instances':
+                    # We allow several syntaxes for instances, since the counts are
+                    # pretty useless. Instances can be defined by position (for originals),
+                    # or by name for use in conditions.
+                    for inst_name in tok.block('Instance'):
+                        self._parse_instance_block(tok, inst_name)
+                case 'connectionpoints':
+                    self._parse_connection_points(tok)
+                case 'occupiedvoxels':
+                    self._parse_occupied_voxels(tok)
+                case 'embeddedvoxels':
+                    self._parse_embedded_voxels(tok)
+                case 'collisions':
+                    self._parse_collisions(tok)
+                case 'embedface':
+                    self._parse_embed_faces(tok)
+                case 'overlay':
+                    self._parse_overlay(tok)
+                case 'inputs':
+                    self._parse_input_outputs(tok, connections, self.conn_inputs)
+                case 'outputs':
+                    self._parse_input_outputs(tok, connections, self.conn_outputs)
+                case 'connections':
+                    self._parse_bee_connections(tok, connections, key)
+                case _:
+                    raise tok.error('Unknown export option {}!', key)
 
     def _parse_instance_block(self, tok: Tokenizer, inst_name: str) -> None:
         """Parse a section in the instances block."""
@@ -1256,7 +1312,7 @@ class Item:
         except ValueError:
             inst_ind = None
             if inst_name.casefold().startswith('bee2_'):
-                inst_name = inst_name.removeprefix('bee2_')
+                inst_name = inst_name[5:]
             # else:
             #     LOGGER.warning(
             #         'Custom instance name "{}" should have bee2_ prefix (line '
@@ -1264,8 +1320,8 @@ class Item:
             #         inst_name, tok.line_num, tok.filename)
 
         block_tok, inst_file = next(tok.skipping_newlines())
+        ent_count = brush_count = side_count = 0
         if block_tok is Token.BRACE_OPEN:
-            ent_count = brush_count = side_count = 0
             inst_file = None
             for block_key in tok.block('Instances', consume_brace=False):
                 folded_key = block_key.casefold()
@@ -1281,17 +1337,22 @@ class Item:
                     raise tok.error('Unknown instance option {}', block_key)
             if inst_file is None:
                 raise tok.error('No instance filename provided!')
-            inst = InstCount(FSPath(inst_file), ent_count, brush_count, side_count)
-        elif block_tok is Token.STRING:
-            inst = InstCount(FSPath(inst_file))
-        else:
+        elif block_tok is not Token.STRING:
             raise tok.error(block_tok)
-        if inst_ind is not None:
-            self.set_inst(inst_ind, inst)
+        is_marker = inst_file.casefold() == InstCount.MARKER_KEY
+        if inst_ind is None:
+            if is_marker:
+                raise tok.error('Custom instance "{}" cannot be a marker!', inst_name)
+            self.cust_instances[inst_name.casefold()] = FSPath(inst_file)
         else:
-            self.cust_instances[inst_name.casefold()] = inst.inst
+            # Standard ordinal instance. If a marker, leave it blank, we'll set the filename later
+            # once we're fully parsed and have the ID set.
+            if is_marker:
+                inst_file = ''
+            inst = InstCount(FSPath(inst_file), ent_count, brush_count, side_count, is_marker=is_marker)
+            self.set_inst(inst_ind, inst)
 
-    def _parse_connections(
+    def _parse_input_outputs(
         self,
         tok: Tokenizer,
         kv_block: Keyvalues,
@@ -1310,16 +1371,7 @@ class Item:
             except ValueError:
                 # Our custom BEEMOD options.
                 if conn_name.casefold() in ('bee', 'bee2'):
-                    for key in tok.block(conn_name):
-                        value = tok.expect(Token.STRING, skip_newline=False)
-                        if key.casefold() == 'force':
-                            value = value.casefold()
-                            if 'in' in value:
-                                self.force_input = True
-                            if 'out' in value:
-                                self.force_output = True
-                        else:
-                            kv_block.append(Keyvalues(key, value))
+                    self._parse_bee_connections(tok, kv_block, conn_name)
                     continue  # We deal with this after the export block is done.
                 else:
                     raise tok.error('Unknown connection type "{}"!', conn_name) from None
@@ -1341,6 +1393,24 @@ class Item:
                     raise tok.error('Unknown option "{}"!', conn_key)
             if activate is not None or deactivate is not None:
                 target[conn_type] = Connection(act_name, activate, deact_name, deactivate)
+
+    def _parse_bee_connections(
+        self, tok: Tokenizer, kv_block: Keyvalues, block_name: str,
+    ) -> None:
+        """Collect keyvalues from a connections block.
+
+        These are merged together before final parsing, since they can be placed in three locations.
+        """
+        for key in tok.block(block_name):
+            value = tok.expect(Token.STRING, skip_newline=False)
+            if key.casefold() == 'force':
+                value = value.casefold()
+                if 'in' in value:
+                    self.force_input = True
+                if 'out' in value:
+                    self.force_output = True
+            else:
+                kv_block.append(Keyvalues(key, value))
 
     def _finalise_connections(self) -> None:
         """Apply legacy outputs to the config, and do some verification."""
@@ -1708,10 +1778,7 @@ class Item:
             f.write(f'\t"Type" "{self.id}"\n')
         f.write('\t"Editor"\n\t\t{\n')
         if self.subtype_prop is not None:
-            if isinstance(self.subtype_prop, str):
-                f.write(f'\t\t"SubtypeProperty" "{self.subtype_prop}"\n')
-            else:
-                f.write(f'\t\t"SubtypeProperty" "{self.subtype_prop.id}"\n')
+            f.write(f'\t\t"SubtypeProperty" "{self.subtype_prop.id}"\n')
         for subtype in self.subtypes:
             subtype.export(f)
         f.write(f'\t\t"MovementHandle" "{self.handle.value}"\n')
@@ -1901,7 +1968,7 @@ class Item:
             f.write('\t\t\t\t}\n')
         f.write('\t\t\t}\n')
 
-    def __getstate__(self) -> tuple:
+    def __getstate__(self) -> tuple[Any, ...]:
         """Simplify pickles.
 
         We produce a tuple to avoid needing to specify the attributes in the file.
@@ -1940,7 +2007,7 @@ class Item:
             self.force_output,
         )
 
-    def __setstate__(self, state: tuple) -> None:
+    def __setstate__(self, state: tuple[Any, ...]) -> None:
         props: list[ItemProp[Any]]
         antline_points: list[list[AntlinePoint]]
         (
@@ -1997,6 +2064,12 @@ class Item:
             LOGGER.warning(
                 'The ButtonType property does nothing if the '
                 'item class is not ItemButtonFloor, only instance 0 is shown.'
+            )
+        # ITEM_CUBE is fine, code handles
+        if self.anchor_barriers and self.handle in (Handle.DUAL_OFF, Handle.QUAD_OFF):
+            LOGGER.warning(
+                "Items with both HANDLE_6/8_POSITIONS and CanAnchorOnBarriers cause the item's "
+                'position to reset whenever geometry changes.'
             )
         # The indicator items are special, they always have just one input...
         if self.has_prim_input() and 'connectioncount' not in self.properties and self.id not in ANTLINE_ITEMS:

@@ -7,7 +7,6 @@ import wx
 
 import packages
 from app import gameMan, lifecycle
-from config.last_sel import LastSelected
 from ui_wx.browsers import SoundBrowser
 from ui_wx.dialogs import DIALOG
 from ui_wx import MAIN_WINDOW
@@ -21,12 +20,6 @@ async def test(core_nursery: trio.Nursery) -> None:
     config.APP.read_file(config.APP_LOC)
 
     await gameMan.load(DIALOG)
-    try:
-        last_game = config.APP.get_cur_conf(LastSelected, 'game')
-    except KeyError:
-        pass
-    else:
-        gameMan.set_game_by_name(last_game.id)
 
     core_nursery.start_soon(lifecycle.lifecycle)
     await packages.LOADED.wait_transition()

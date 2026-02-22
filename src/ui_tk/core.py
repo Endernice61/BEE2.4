@@ -14,7 +14,6 @@ from app import (
 )
 from app.dialogs import check_future_config
 from config.gen_opts import GenOptions
-from config.last_sel import LastSelected
 from config.windows import WindowState
 from trio_debug import Tracer
 from ui_tk import TK_ROOT, route_callback_exceptions, wid_transtoken
@@ -57,12 +56,6 @@ async def init_app(core_nursery: trio.Nursery) -> None:
 
         LOGGER.debug('Loading settings...')
         await gameMan.load(DIALOG)
-        try:
-            last_game = config.APP.get_cur_conf(LastSelected, 'game')
-        except KeyError:
-            pass
-        else:
-            gameMan.set_game_by_name(last_game.id)
 
         core_nursery.start_soon(sound.sound_task)
 
@@ -151,7 +144,7 @@ async def app_main(init: Callable[[trio.Nursery], Awaitable[Any]]) -> None:
         # Run main app, then once completed cancel this nursery to quit all other tasks.
         # It gets given the nursery to allow spawning new tasks here.
         await init(nursery)
-        nursery.cancel_scope.cancel()
+        nursery.cancel_scope.cancel('app_main() finished')
 
 
 def done_callback(result: Outcome[None]) -> None:

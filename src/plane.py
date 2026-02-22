@@ -2,19 +2,27 @@
 
 """
 from __future__ import annotations
-from typing import Any, Final, overload
+from typing import Any, Final, overload, ClassVar
 
 from collections.abc import (
-    ItemsView, Iterable, Iterator, Mapping, MutableMapping, ValuesView,
+    ItemsView, Iterable, Iterator, Mapping, MutableMapping, ValuesView, Sequence,
 )
 import copy
 
 from srctools.math import AnyVec, FrozenMatrix, FrozenVec, Vec
 import attrs
 
+__all__ = ['PlaneKey', 'PlaneGrid']
 
-# Sentinel object for empty slots and parameter defaults.
+# Sentinel object for empty slots and parameter defaults. TODO use PEP 661
 _UNSET: Any = type('_UnsetType', (), {'__repr__': lambda s: 'UNSET'})()
+# Size of each plane grid cell.
+CELL_SIZE = 8
+CELL_SIZE_SQR = CELL_SIZE ** 2
+# Corresponding coordinates in a cell, cached so we can zip this with the contents.
+CELL_COORDS: Sequence[tuple[int, int]] = [
+    (x, y) for y in range(CELL_SIZE) for x in range(CELL_SIZE)
+]
 
 
 # The 6 possible normal vectors for the plane.
@@ -97,12 +105,60 @@ class PlaneKey:
         return (Vec(pos) - self.normal * self.distance) @ orient
 
 
+class Cell[ValT]:
+    """Stores a CELL_SIZE x CELL_SIZE grid of values."""
+    array: list[ValT]
+    count: int
+
+    def __init__(self, count: int, data: list[ValT]) -> None:
+        self.array = data
+        self.count = count
+
+    def __repr__(self) -> str:
+        return f'Cell({self.count}, {self.array!r})'
+
+    def copy(self) -> Cell[ValT]:
+        """Shallow-copy the cell."""
+        return Cell(self.count, self.array.copy())
+
+    def validate(self) -> None:
+        """Check the count is accurate."""
+        assert self.count == sum(v is not _UNSET for v in self.array), self
+
+
+class SingleCell[ValT]:
+    """Represents a cell entirely filled with a single value."""
+    count: ClassVar[int] = CELL_SIZE_SQR
+    # Should not be unset!
+    value: ValT
+
+    def __init__(self, value: ValT) -> None:
+        assert value is not _UNSET
+        self.value = value
+
+    def __repr__(self) -> str:
+        return f'SingleCell({self.count}, {self.value!r})'
+
+    def copy(self) -> SingleCell[ValT]:
+        """Shallow-copy the cell."""
+        return SingleCell(self.value)
+
+    def validate(self) -> None:
+        """Does nothing."""
+        pass
+
+    def inflate(self) -> Cell[ValT]:
+        """Inflate the array to full size."""
+        return Cell(CELL_SIZE_SQR, [self.value] * CELL_SIZE_SQR)
+
+
 class PlaneGrid[ValT](MutableMapping[tuple[int, int], ValT]):
     """An adaptive 2D matrix holding arbitary values.
 
-    This is implemented with a list of lists, with an offset value for all.
-    An (x, y) value is located at data[y - yoff][x - xoff[y - yoff]]
+    We store items in CELL_SIZE^2 arrays.
     """
+    _cells: dict[tuple[int, int], Cell[ValT] | SingleCell[ValT]]
+
     def __init__(
         self,
         contents: Mapping[tuple[int, int], ValT] | Iterable[tuple[tuple[int, int], ValT]] = (),
@@ -112,10 +168,7 @@ class PlaneGrid[ValT](MutableMapping[tuple[int, int], ValT]):
         """Initalises the plane with the provided values."""
         # Track the minimum/maximum position found
         self._min_x = self._min_y = self._max_x = self._max_y = 0
-        self._yoff = 0
-        self._xoffs: list[int] = []
-        self._data: list[list[ValT] | None] = []
-        self._used = 0
+        self._cells = {}
         self.default = default
         if contents:
             self.update(contents)
@@ -137,7 +190,11 @@ class PlaneGrid[ValT](MutableMapping[tuple[int, int], ValT]):
 
     def __len__(self) -> int:
         """The length is the number of used slots."""
-        return self._used
+        return sum(cell.count for cell in self._cells.values())
+
+    def __bool__(self) -> bool:
+        """The grid is true if a value is present."""
+        return bool(self._cells)
 
     def __repr__(self) -> str:
         return f'Plane({dict(self.items())!r})'
@@ -163,11 +220,12 @@ class PlaneGrid[ValT](MutableMapping[tuple[int, int], ValT]):
         if isinstance(source, PlaneGrid):
             res: PlaneGrid[ValT] = cls.__new__(cls)
             res.__dict__.update(source.__dict__)  # Immutables
-            res._xoffs = source._xoffs.copy()
-            res._data = [
-                None if row is None else [value] * len(row)
-                for row in source._data
-            ]
+            res._cells = {
+                pos: SingleCell(value)
+                if isinstance(cell, SingleCell) else
+                Cell(cell.count, [value if orig is not _UNSET else _UNSET for orig in cell.array])
+                for pos, cell in source._cells.items()
+            }
             return res
         else:
             res = PlaneGrid()
@@ -179,11 +237,10 @@ class PlaneGrid[ValT](MutableMapping[tuple[int, int], ValT]):
         """Shallow-copy the plane."""
         cpy = PlaneGrid.__new__(PlaneGrid)
         cpy.__dict__.update(self.__dict__)  # Immutables
-        cpy._xoffs = self._xoffs.copy()
-        cpy._data = [
-            None if row is None else row.copy()
-            for row in self._data
-        ]
+        cpy._cells = {
+            pos: cell.copy()
+            for pos, cell in self._cells.items()
+        }
         return cpy
 
     __copy__ = copy
@@ -192,8 +249,7 @@ class PlaneGrid[ValT](MutableMapping[tuple[int, int], ValT]):
         """Deep-copy the plane."""
         cpy = PlaneGrid.__new__(PlaneGrid)
         cpy.__dict__.update(self.__dict__)  # Immutables
-        cpy._xoffs = self._xoffs.copy()
-        cpy._data = copy.deepcopy(self._data, memodict)
+        cpy._cells = copy.deepcopy(self._cells, memodict)
         return cpy
 
     def __getitem__(self, pos: tuple[float, float]) -> ValT:
@@ -202,21 +258,24 @@ class PlaneGrid[ValT](MutableMapping[tuple[int, int], ValT]):
 
     def __contains__(self, pos: tuple[float, float] | object) -> bool:
         """Check if a value is set at the given location."""
+        if not isinstance(pos, tuple):
+            return False
         try:
-            x, y = map(int, pos)  # type: ignore
+            p1, p2 = pos
+            x = int(p1)
+            y = int(p2)
         except (ValueError, TypeError):
             return False
-
-        y += self._yoff
-        if y < 0:
-            return False
+        cell_x, x = divmod(x, CELL_SIZE)
+        cell_y, y = divmod(y, CELL_SIZE)
         try:
-            x += self._xoffs[y]
-            if x < 0:
-                return False
-            return (row := self._data[y]) is not None and row[x] is not _UNSET
-        except IndexError:
+            cell = self._cells[cell_x, cell_y]
+        except KeyError:
             return False
+        if isinstance(cell, SingleCell):
+            return True
+        else:
+            return cell.array[y * CELL_SIZE + x] is not _UNSET
 
     @overload
     def get(self, key: tuple[float, float], /) -> ValT | None: ...
@@ -226,134 +285,121 @@ class PlaneGrid[ValT](MutableMapping[tuple[int, int], ValT]):
     def get[DefaultT](self, pos: tuple[float, float], default: DefaultT | None = None) -> DefaultT | ValT | None:
         """Return the value at a given position, or a default if not present."""
         try:
-            x, y = map(int, pos)
+            p1, p2 = pos
+            x = int(p1)
+            y = int(p2)
         except (ValueError, TypeError):
             if default is _UNSET:  # For __getitem__ only.
                 raise KeyError(pos) from None
             else:
                 return default
-
-        out: ValT = _UNSET
-        y += self._yoff
-        # Zero checks ensure we don't do negative indexing.
-        if y >= 0:
-            try:
-                x += self._xoffs[y]
-                if x >= 0 and (row := self._data[y]) is not None:
-                    out = row[x]
-            except IndexError:
-                pass
-        if out is _UNSET:
+        cell_x = x // CELL_SIZE
+        cell_y = y // CELL_SIZE
+        x %= CELL_SIZE
+        y %= CELL_SIZE
+        try:
+            cell = self._cells[cell_x, cell_y]
+        except KeyError:
             if default is _UNSET:
-                raise KeyError(pos)
+                raise KeyError(pos) from None
             else:
                 return default
-        return out
+        if isinstance(cell, SingleCell):
+            return cell.value
+        else:
+            value = cell.array[y * CELL_SIZE + x]
+        if value is _UNSET:
+            if default is _UNSET:
+                raise KeyError(pos) from None
+            else:
+                return default
+        return value
 
     def __setitem__(self, pos: tuple[float, float], val: ValT) -> None:
         """Set the value at the given position, resizing if required."""
         try:
-            x, y = map(int, pos)
+            p1, p2 = pos
+            x = int(p1)
+            y = int(p2)
         except (ValueError, TypeError):
             raise KeyError(pos) from None
 
-        if not self._data:
-            # The entire table is empty, we should move offsets and put this at index 0, 0.
-            self._yoff = -y
-            self._xoffs.append(-x)
-            self._data.append([val])
-            self._used += 1
+        if not self._cells:
+            # First value, set this as the min/max.
             self._min_x = self._max_x = x
             self._min_y = self._max_y = y
-            return
+        else:
+            if y < self._min_y:
+                self._min_y = y
+            if y > self._max_y:
+                self._max_y = y
+            if x < self._min_x:
+                self._min_x = x
+            if x > self._max_x:
+                self._max_x = x
 
-        if y < self._min_y:
-            self._min_y = y
-        if y > self._max_y:
-            self._max_y = y
-        if x < self._min_x:
-            self._min_x = x
-        if x > self._max_x:
-            self._max_x = x
-
-        y_ind = y + self._yoff
-        y_bound = len(self._xoffs)
-
-        # Extend if required.
-        if y_ind < 0:
-            change = -y_ind
-            self._yoff += change
-            self._xoffs[0:0] = [0] * change
-            self._data[0:0] = [None] * change
-            y_ind = 0
-        elif y_ind >= y_bound:
-            change = y_ind - y_bound + 1
-            self._xoffs += [0] * change
-            self._data += [None] * change
-            y_ind = -1  # y_bound - 1, but list can compute that.
-
-        # Now x.
-        data = self._data[y_ind]
-        if data is None or not data:
-            # This row is empty, so we can just move its offset to wherever we are and create
-            # the list.
-            self._data[y_ind] = [val]
-            self._xoffs[y_ind] = -x
-            self._used += 1
-            return
-
-        x_ind = x + self._xoffs[y_ind]
-        x_bound = len(data)
-        if x_ind < 0:
-            change = -x_ind
-            self._xoffs[y_ind] += change
-            data[0:0] = [_UNSET] * change
-            x_ind = 0
-        elif x_ind >= x_bound:
-            change = x_ind - x_bound + 1
-            data += [_UNSET] * change
-            x_ind = -1
-
-        if data[x_ind] is _UNSET:
-            self._used += 1
-
-        data[x_ind] = val
+        cell_x, x = divmod(x, CELL_SIZE)
+        cell_y, y = divmod(y, CELL_SIZE)
+        ind = y * CELL_SIZE + x
+        try:
+            cell = self._cells[cell_x, cell_y]
+        except KeyError:
+            # Missing, we don't need to check for _UNSET
+            cell = self._cells[cell_x, cell_y] = Cell(1, [_UNSET] * CELL_SIZE_SQR)
+            cell.array[ind] = val
+        else:
+            if isinstance(cell, SingleCell):
+                self._cells[cell_x, cell_y] = cell = cell.inflate()
+            if cell.array[ind] is _UNSET:
+                cell.count += 1
+            cell.array[ind] = val
 
     def __iter__(self) -> Iterator[tuple[int, int]]:
         """Return all used keys."""
-        for y, (xoff, row) in enumerate(zip(self._xoffs, self._data, strict=True), start=-self._yoff):
-            if row is None:
-                continue
-            for x, data in enumerate(row, start=-xoff):
-                if data is not _UNSET:
-                    yield (x, y)
+        for (cell_x, cell_y), cell in self._cells.items():
+            cell_x *= CELL_SIZE
+            cell_y *= CELL_SIZE
+            if isinstance(cell, SingleCell):
+                for x, y in CELL_COORDS:
+                    yield (cell_x + x, cell_y + y)
+            else:
+                for (x, y), value in zip(CELL_COORDS, cell.array, strict=True):
+                    if value is not _UNSET:
+                        yield (cell_x + x, cell_y + y)
 
     def __delitem__(self, pos: tuple[float, float]) -> None:
         """Remove the value at a given position, doing nothing if not set."""
         try:
-            x, y = map(int, pos)
+            p1, p2 = pos
+            x = int(p1)
+            y = int(p2)
         except (ValueError, TypeError):
             raise KeyError(pos) from None
 
-        y += self._yoff
-        if y < 0:
-            return
+        cell_x, x = divmod(x, CELL_SIZE)
+        cell_y, y = divmod(y, CELL_SIZE)
         try:
-            x += self._xoffs[y]
-            if x < 0:
-                return
-            if (row := self._data[y]) is not None and row[x] is not _UNSET:
-                self._used -= 1
-                row[x] = _UNSET
-        except IndexError:  # Already deleted.
+            cell = self._cells[cell_x, cell_y]
+        except KeyError:
             pass
+        else:
+            ind = y * CELL_SIZE + x
+            if isinstance(cell, SingleCell):
+                self._cells[cell_x, cell_y] = cell = cell.inflate()
+                cell.count -= 1
+                cell.array[ind] = _UNSET
+            elif cell.array[ind] is not _UNSET:
+                if cell.count == 1:
+                    # Emptied completely, just discard.
+                    del self._cells[cell_x, cell_y]
+                else:
+                    cell.count -= 1
+                    cell.array[ind] = _UNSET
 
     def clear(self) -> None:
         """Remove all data from the plane."""
         self._min_x = self._min_y = self._max_x = self._max_y = 0
-        self._yoff = self._used = 0
-        self._xoffs.clear()
-        self._data.clear()
+        self._cells.clear()
 
     def values(self) -> ValuesView[ValT]:
         """D.values() -> a set-like object providing a view on D's values"""
@@ -363,25 +409,32 @@ class PlaneGrid[ValT](MutableMapping[tuple[int, int], ValT]):
         """D.items() -> a set-like object providing a view on D's items"""
         return GridItems(self)
 
-    def largest_index(self) -> tuple[int, int, ValT]:
-        """Find a high index position, then return it plus the value.
+    def compact(self) -> None:
+        """Look for cells with the same value, and consolidate them."""
+        for pos, cell in list(self._cells.items()):
+            if cell.count == 0:
+                del self._cells[pos]
+            elif isinstance(cell, Cell) and cell.count == CELL_SIZE_SQR:
+                first = cell.array[0]
+                if all(value == first for value in cell.array):
+                    self._cells[pos] = SingleCell(first)
 
-        For iterating through the grid in an arbitary order, this is the cheapest to pop.
-        """
-        # Skip past empty rows/columns. We'll pop them to save memory while we're here.
-        while self._data:
-            if not (row := self._data[-1]):
-                self._data.pop()
-                self._xoffs.pop()
-                continue
-            if (value := row[-1]) is _UNSET:
-                row.pop()
-                continue
-            y_ind = len(self._data) - 1
-            x = len(row) - 1 - self._xoffs[y_ind]
-            y = y_ind - self._yoff
-            return x, y, value
-        raise KeyError('Empty grid!')
+    def largest_index(self) -> tuple[int, int, ValT]:
+        """Find a high index position, then return it plus the value."""
+        # TODO: Replace with an iterator or something, this isn't very efficient to call repeatedly.
+        try:
+            cell_x, cell_y = pos = max(self._cells)
+        except ValueError:
+            raise KeyError('Empty grid!') from None
+        cell = self._cells[pos]
+        cell_x *= CELL_SIZE
+        cell_y *= CELL_SIZE
+        if isinstance(cell, SingleCell):
+            return (cell_x + CELL_SIZE - 1, cell_y + CELL_SIZE - 1, cell.value)
+        for (x, y), value in zip(reversed(CELL_COORDS), reversed(cell.array), strict=True):
+            if value is not _UNSET:
+                return (cell_x + x, cell_y + y, value)
+        raise AssertionError(f'Cell {pos} is empty? {self._cells}')
 
 
 # noinspection PyProtectedMember
@@ -392,21 +445,25 @@ class GridValues[ValT](ValuesView[ValT]):
 
     def __contains__(self, item: object) -> bool:
         """Check if the provided item is a value."""
-        for row in self._mapping._data:
-            if row is None:
-                continue
-            if item in row:
-                return True
+        for cell in self._mapping._cells.values():
+            if isinstance(cell, SingleCell):
+                if cell.value == item:
+                    return True
+            else:
+                if item in cell.array:
+                    return True
         return False
 
     def __iter__(self) -> Iterator[ValT]:
         """Produce all values in the plane."""
-        for row in self._mapping._data:
-            if row is None:
-                continue
-            for value in row:
-                if value is not _UNSET:
-                    yield value
+        for cell in self._mapping._cells.values():
+            if isinstance(cell, SingleCell):
+                for _ in range(CELL_SIZE_SQR):
+                    yield cell.value
+            else:
+                for value in cell.array:
+                    if value is not _UNSET:
+                        yield value
 
 
 # noinspection PyProtectedMember
@@ -429,12 +486,13 @@ class GridItems[ValT](ItemsView[tuple[int, int], ValT]):
 
     def __iter__(self) -> Iterator[tuple[tuple[int, int], ValT]]:
         """Produce all coord, value pairs in the plane."""
-        for y, (xoff, row) in enumerate(
-            zip(self._mapping._xoffs, self._mapping._data, strict=True),
-            start=-self._mapping._yoff,
-        ):
-            if row is None:
-                continue
-            for x, data in enumerate(row, start=-xoff):
-                if data is not _UNSET:
-                    yield (x, y), data
+        for (cell_x, cell_y), cell in self._mapping._cells.items():
+            cell_x *= CELL_SIZE
+            cell_y *= CELL_SIZE
+            if isinstance(cell, SingleCell):
+                for x, y in CELL_COORDS:
+                    yield (cell_x + x, cell_y + y), cell.value
+            else:
+                for (x, y), value in zip(CELL_COORDS, cell.array, strict=True):
+                    if value is not _UNSET:
+                        yield (cell_x + x, cell_y + y), value

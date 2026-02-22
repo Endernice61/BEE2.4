@@ -355,14 +355,14 @@ class BBox:
         """Convert to a Volume object."""
         return Volume(
             self.mins.freeze(), self.maxes.freeze(),
-            [
-                Plane(Vec.x_neg, -self.min_x),
-                Plane(Vec.x_pos, +self.max_x),
-                Plane(Vec.y_neg, -self.min_y),
-                Plane(Vec.y_pos, +self.max_y),
-                Plane(Vec.z_neg, -self.min_z),
-                Plane(Vec.z_pos, +self.max_z),
-            ],
+            Geometry.from_dup_planes([
+                Plane(Vec.x_neg.thaw(), -self.min_x),
+                Plane(Vec.x_pos.thaw(), +self.max_x),
+                Plane(Vec.y_neg.thaw(), -self.min_y),
+                Plane(Vec.y_pos.thaw(), +self.max_y),
+                Plane(Vec.z_neg.thaw(), -self.min_z),
+                Plane(Vec.z_pos.thaw(), +self.max_z),
+            ]),
             name=self.name,
             tags=self.tags,
             contents=self.contents,
@@ -491,8 +491,18 @@ class BBox:
 
     def __matmul__(self, other: AnyAngle | AnyMatrix) -> BBox:
         """Rotate the bounding box by an angle. This should be multiples of 90 degrees."""
-        matrix, mins, maxes = self._rotate_bbox(other)
-        return self._with_points(mins, maxes)
+        matrix = to_matrix(other)
+        if all(
+            any(abs(v) > 0.9 for v in vec)
+            for vec in [matrix.forward(), matrix.left(), matrix.up()]
+        ):
+            # If the matrix is orthogonal, the result is a bbox. That means one axis is approximately
+            # 1 or -1, the others are zero. We can just check for a 1 in each, since they're normalised.
+            matrix, mins, maxes = self._rotate_bbox(other)
+            return self._with_points(mins, maxes)
+        else:
+            # Convert to a volume.
+            return self.as_volume() @ matrix
 
     def __add__(self, other: Vec | FrozenVec | tuple[float, float, float]) -> BBox:
         """Shift the bounding box forwards by this amount."""
@@ -720,8 +730,6 @@ class Volume(BBox):  # type: ignore[override]
 
     def _shift(self, other: FrozenVec) -> Volume:
         """Shift the bounding box by a vector."""
-        changed = False
-
         polys = []
         for poly in self.geo.polys:
             offset = Vec.dot(poly.plane.normal, other)

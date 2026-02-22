@@ -1,6 +1,6 @@
 """Parse Markdown and display it in Tkinter widgets."""
 from __future__ import annotations
-from typing import Never, override
+from typing import Never, override, Any
 
 from tkinter.font import Font as tkFont, nametofont
 from tkinter.messagebox import askokcancel
@@ -147,7 +147,9 @@ state = ContextVar('tk_markdown_state', default=no_state)
 
 if not hasattr(base_renderer.BaseRenderer, '__class_getitem__'):
     # Patch in generic support.
-    base_renderer.BaseRenderer.__class_getitem__ = lambda item: base_renderer.BaseRenderer  # type: ignore
+    base_renderer.BaseRenderer.__class_getitem__ = lambda item: base_renderer.BaseRenderer
+elif utils.CODE_DEV_MODE:
+    raise ValueError('Generic patch not necessary.')
 
 
 class TKRenderer(base_renderer.BaseRenderer[list[Block]]):
@@ -167,7 +169,7 @@ class TKRenderer(base_renderer.BaseRenderer[list[Block]]):
         """
         blocks: list[Block] = []
         if not hasattr(token, 'children'):
-            result = super().render_inner(token)
+            result: Any = super().render_inner(token)
             assert isinstance(result, list)
             return result
         child: Token
@@ -200,12 +202,14 @@ class TKRenderer(base_renderer.BaseRenderer[list[Block]]):
 
     def render_auto_link(self, token: stok.AutoLink) -> list[Block]:
         """An automatic link - the child is a single raw token."""
+        assert token.children is not None
         [child] = token.children
         assert isinstance(child, stok.RawText)
         return segment(child.content, TextTag.LINK, url=token.target)
 
     def render_block_code(self, token: btok.BlockCode) -> list[Block]:
         """Render full code blocks."""
+        assert token.children is not None
         [child] = token.children
         assert isinstance(child, stok.RawText)
         # TODO: Code block.
@@ -218,6 +222,7 @@ class TKRenderer(base_renderer.BaseRenderer[list[Block]]):
 
     def render_escape_sequence(self, token: stok.EscapeSequence) -> list[Block]:
         """Render backslash escaped text."""
+        assert token.children is not None
         [child] = token.children
         assert isinstance(child, stok.RawText)
         return [TextSegment(child.content)]
@@ -232,6 +237,7 @@ class TKRenderer(base_renderer.BaseRenderer[list[Block]]):
 
     def render_inline_code(self, token: stok.InlineCode) -> list[Block]:
         """Render inline code segments."""
+        assert token.children is not None
         [child] = token.children
         assert isinstance(child, stok.RawText)
         return segment(child.content, TextTag.CODE)

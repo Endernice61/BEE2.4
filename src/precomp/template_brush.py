@@ -16,7 +16,10 @@ import attrs
 from srctools import Keyvalues, conv_bool
 from srctools.filesys import FileSystem, ZipFileSystem, RawFileSystem, VPKFileSystem
 from srctools.math import AnyAngle, AnyMatrix, FrozenVec, Vec, Angle, Matrix, to_matrix
-from srctools.vmf import Entity, EntityGroup, Solid, Side, VMF, UVAxis, ValidKVs, VisGroup
+from srctools.vmf import (
+    Entity, EntityGroup, Solid, Side, VMF, UVAxis, ValidKVs, VisGroup,
+    localise_overlay,
+)
 from srctools.dmx import Element
 import srctools.logger
 
@@ -300,7 +303,7 @@ class ExportedTemplate:
     visgroups: set[str]
     picker_results: dict[str, Portalable | None]
     picker_type_results: dict[str, TileType | None]
-    debug_marker: Callable[..., None] | None
+    debug_marker: Callable[..., Entity] | None
 
 
 # Make_prism() generates faces aligned to world, copy the required UVs.
@@ -745,6 +748,7 @@ def _parse_template(loc: UnparsedTemplate) -> Template:
         ))
 
     coll: list[CollisionDef] = []
+    visgroup_set: set[str]
     for ent in vmf.by_class['bee2_collision_bbox']:
         visgroup_set = set(map(visgroup_names.__getitem__, ent.visgroup_ids))
         for bbox in collisions.BBox.from_ent(ent):
@@ -861,9 +865,10 @@ def import_template(
 
     dbg_visgroup: VisGroup | None = None
     dbg_group: EntityGroup | None = None
-    dbg_add: Callable[..., None] | None = None
+    dbg_add: Callable[..., Entity] | None = None
     if template.debug:
         # Find the visgroup for template debug data, and create an entity group.
+        # TODO: Use fetch_debug_visgroup()?
         for dbg_visgroup in vmf.vis_tree:
             if dbg_visgroup.name == 'Templates':
                 break
@@ -871,13 +876,14 @@ def import_template(
             dbg_visgroup = vmf.create_visgroup('Templates', (113, 113, 0))
         dbg_group = EntityGroup(vmf, color=Vec(113, 113, 0))
 
-        def dbg_add(classname: str, **kwargs: ValidKVs) -> None:
+        def dbg_add(classname: str, **kwargs: ValidKVs) -> Entity:
             """Add a marker to the map."""
             ent = vmf.create_ent(classname, **kwargs)
             ent.visgroup_ids.add(dbg_visgroup.id)
             ent.groups.add(dbg_group.id)
             ent.vis_shown = False
             ent.hidden = True
+            return ent
 
         dbg_add(
             'bee2_template_conf',
@@ -915,7 +921,7 @@ def import_template(
             if int(side) in id_mapping
         )
 
-        srctools.vmf.localise_overlay(new_overlay, origin, orient)
+        localise_overlay(new_overlay, origin, orient)
         orig_target = new_overlay['targetname']
 
         # Only change the targetname if the overlay is not global, and we have
@@ -1288,6 +1294,7 @@ def retexture_template(
                 force=tile_setter.force,
                 picker_name=tile_setter.picker_name,
                 color=repr(tile_setter.color),
+                force_colour=repr(force_colour),
             )
 
         if tile_setter.color is AppliedColour.COPY:
@@ -1341,6 +1348,8 @@ def retexture_template(
 
             # Inverting applies to all of these.
             if force_colour is AppliedColour.INVERT:
+                setter_color = ~setter_color
+            if tile_setter.color is AppliedColour.INVERT:
                 setter_color = ~setter_color
 
             setter_type = TileType.with_color_and_size(

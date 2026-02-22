@@ -143,7 +143,7 @@ class PygletSound(NullSound):
             LOGGER.info('UI sounds disabled.')
             sounds = NullSound()
             if _nursery is not None:
-                _nursery.cancel_scope.cancel()
+                _nursery.cancel_scope.cancel('sound failed to load')
             return None
         else:
             LOGGER.info('Loaded sound "{}" -> {}', name, path)
@@ -154,6 +154,7 @@ class PygletSound(NullSound):
     async def fx(self, sound: SoundName) -> None:
         """Play a sound effect, sleeping for the duration."""
         global sounds
+        snd: PygletSource | None
         if play_fx():
             try:
                 snd = self.sources[sound]
@@ -171,7 +172,7 @@ class PygletSound(NullSound):
                     LOGGER.exception("Couldn't play sound {}:", sound)
                     LOGGER.info('UI sounds disabled.')
                     if _nursery is not None:
-                        _nursery.cancel_scope.cancel()
+                        _nursery.cancel_scope.cancel('system failure')
                     sounds = NullSound()
                     await trio.sleep(0.1)
                 if (duration := snd.duration) is not None:
@@ -206,7 +207,7 @@ async def sound_task() -> None:
                         tick(True)  # True = don't sleep().
                     except Exception:
                         LOGGER.exception('Pyglet tick failed:')
-                        _nursery.cancel_scope.cancel()
+                        _nursery.cancel_scope.cancel('tick failure')
                         break
                     await trio.sleep(0.1)
 
@@ -218,7 +219,7 @@ async def _load_bg(sound: SoundName) -> None:
     except Exception:
         LOGGER.exception('Failed to load sound:')
         if _nursery is not None:
-            _nursery.cancel_scope.cancel()
+            _nursery.cancel_scope.cancel('failed load')
 
 
 def fx(name: SoundName) -> None:
@@ -312,7 +313,7 @@ class SamplePlayer:
 
     def play(self, *filenames: str) -> None:
         """Play sounds, clearing existing sounds."""
-        self._play_scope.cancel()
+        self._play_scope.cancel('restarted')
         self._queue.clear()
         self._queue.extend(filenames)
         self.is_playing.value = True
@@ -324,7 +325,7 @@ class SamplePlayer:
 
     def stop(self) -> None:
         """Cancel playback, if it's playing."""
-        self._play_scope.cancel()
+        self._play_scope.cancel('stop')
         self._queue.clear()
         self.is_playing.value = False
 
@@ -356,7 +357,7 @@ class SamplePlayer:
                     player = sound.play()
                     LOGGER.debug('Sound duration: {}={}', snd_path, sound.duration)
                     try:
-                        await trio.sleep(sound.duration + 0.1)
+                        await trio.sleep((sound.duration or 0.0) + 0.1)
                     finally:
                         player.delete()
                 LOGGER.debug('Queue completed successfully.')
@@ -378,7 +379,7 @@ class SamplePlayer:
         child_sys = self.system.get_system(file)
         # Special case raw filesystems - Pyglet is more efficient
         # if it can just open the file itself.
-        if isinstance(child_sys, RawFileSystem) and False:
+        if isinstance(child_sys, RawFileSystem):
             load_path = Path(child_sys.path, file.path)
             LOGGER.debug('Loading sound directly from {!r}', load_path)
             return load_path

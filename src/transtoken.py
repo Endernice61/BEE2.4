@@ -5,6 +5,7 @@ so that data structures can be shared.
 We take care not to directly import gettext and babel, so the compiler can omit those.
 """
 from __future__ import annotations
+from typing_extensions import deprecated
 from typing import (
     Any, ClassVar, Final, LiteralString, Never, NoReturn, Protocol, cast, override,
 )
@@ -16,6 +17,8 @@ from pathlib import Path
 import string
 
 from srctools import EmptyMapping, logger
+from srctools.tokenizer import TokenSyntaxError
+
 from trio_util import AsyncValue
 import attrs
 
@@ -276,7 +279,7 @@ class TransToken:
                     return formatter.vformat(text, (), self.parameters)
                 else:
                     return text.format_map(self.parameters)
-            except KeyError:
+            except LookupError:
                 LOGGER.warning('Could not format {!r} with {}', text, self.parameters)
                 return text
         else:
@@ -309,6 +312,7 @@ class PluralTransToken(TransToken):
     token_plural: str
 
     @classmethod
+    @deprecated("Not permitted")
     def _not_allowed(cls, *args: Never, **kwargs: Never) -> NoReturn:
         raise NotImplementedError('This is not allowed.')
 
@@ -459,10 +463,15 @@ class AppError(Exception):
     message: TransToken
     fatal: bool
 
-    def __init__(self, message: TransToken) -> None:
+    def __init__(self, message: TransToken, *, fatal: bool = False) -> None:
         super().__init__(message)
         self.message = message
-        self.fatal = False
+        self.fatal = fatal
+
+    @classmethod
+    def from_syntax(cls, error: TokenSyntaxError) -> AppError:
+        """Convert a TokenSyntaxError into an AppError."""
+        return cls(TransToken.untranslated(f'Invalid syntax:\n{error!s}'))
 
     def __str__(self) -> str:
         return f"AppError: {self.message}"

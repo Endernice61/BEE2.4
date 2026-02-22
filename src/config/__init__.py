@@ -5,9 +5,9 @@ They can then fetch the current state and store new state.
 """
 from __future__ import annotations
 
-from typing import ClassVar, Self, cast, override
+from typing import Any, ClassVar, Self, cast, override
 from collections.abc import Generator, ItemsView, Iterator, KeysView, Mapping
-from pathlib import Path
+from pathlib import Path, PurePath
 import datetime
 import abc
 import contextlib
@@ -22,7 +22,7 @@ import utils
 from transtoken import TransToken
 
 
-LOGGER = logger.get_logger(__name__)
+LOGGER = logger.get_logger('config', alias='config')
 if not os.environ.get('BEE_LOG_CONFIG'):  # Debug messages are spammy.
     LOGGER.setLevel('INFO')
 
@@ -46,7 +46,7 @@ class UnknownVersion(Exception):
 
 
 @attrs.define(eq=False)
-class ConfInfo[DataT: 'Data']:
+class ConfInfo[DataT: Data]:
     """Holds information about a type of configuration data."""
     name: str
     version: int
@@ -55,16 +55,16 @@ class ConfInfo[DataT: 'Data']:
 
 
 # List of mismatched sections produced when parsing.
-type VersionMismatchList = list[tuple[ConfInfo | str, int]]
+type VersionMismatchList = list[tuple[ConfInfo[Any] | str, int]]
 TRANS_MISMATCH_TITLE = TransToken.ui('Version Mismatch')
 TRANS_MISMATCH_PAL_MESSAGE = TransToken.ui(
-    'The palette "{name}" has unknown config versions for the following sections:'
+    'The palette "{name}" ({path}) has unknown config versions for the following sections:'
 )
 TRANS_MISMATCH_CONF_MESSAGE = TransToken.ui(
     'The primary config has unknown versions for the following sections:'
 )
 TRANS_MISMATCH_PAL_SKIP_PROMPT = TransToken.ui(
-    'Either discard this data to load the rest of the palette, skip it tempoarily, '
+    'Either discard this data to load the rest of the palette, skip it temporarily, '
     'or quit the app to leave it unchanged.'
 )
 TRANS_MISMATCH_PAL_PROMPT = TransToken.ui(
@@ -79,9 +79,14 @@ TRANS_MISMATCH_CONF_PROMPT = TransToken.ui(
 def build_version_mismatch_prompt(
     sections: VersionMismatchList,
     can_skip: bool,
-    pal_name: str | None,
+    pal_name: tuple[PurePath, str] | None,
 ) -> TransToken:
-    """Build the text to describe a version mismatch."""
+    """Build the text to describe a version mismatch.
+    :param sections: The value provided from a config parse.
+    :param can_skip: Can only be set for palettes. If we can, swap the message to indicate skipping
+        is allowed.
+    :param pal_name: If set, should be a (filename, display) tuple. If None, this is the main config.
+    """
     section_ver = TransToken.untranslated('- {name}: {found} > {max}')
     section_unknown = TransToken.untranslated('- {name}')
     sections = [
@@ -91,7 +96,8 @@ def build_version_mismatch_prompt(
         for info, version in sections
     ]
     if pal_name is not None:
-        msg = TRANS_MISMATCH_PAL_MESSAGE.format(name=pal_name)
+        path, disp_name = pal_name
+        msg = TRANS_MISMATCH_PAL_MESSAGE.format(path=path.name, name=disp_name)
         prompt = TRANS_MISMATCH_PAL_SKIP_PROMPT if can_skip else TRANS_MISMATCH_PAL_PROMPT
     else:
         msg = TRANS_MISMATCH_CONF_MESSAGE
@@ -126,7 +132,7 @@ def backup_conf(path: Path, suffix: str) -> None:
 
 class Data(abc.ABC):
     """Data which can be saved to the config. These should be immutable."""
-    __info: ClassVar[ConfInfo]
+    __info: ClassVar[ConfInfo[Any]]
     __slots__ = ()  # No members itself.
 
     @override

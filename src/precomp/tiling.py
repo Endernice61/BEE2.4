@@ -40,7 +40,7 @@ import consts
 
 
 __all__ = [
-    'TileSize', 'Portalable', 'TileType', 'Bevels',
+    'TileSize', 'Portalable', 'TileType', 'Bevels', 'Axis',
     'TILETYPE_FROM_CHAR', 'TILETYPE_TO_CHAR', 'PanelType', 'Panel', 'round_grid', 'TileDef',
     'analyse_map', 'generate_brushes', 'make_tile',
     'TILES',  # TODO make private, encapsulate?
@@ -100,12 +100,16 @@ class Bevels(Flag):
     none = 0
     north = v_max = 0b1000
     south = v_min = 0b0100
-    east  = u_min = 0b0010
-    west  = u_max = 0b0001
+    west  = u_min = 0b0010
+    east  = u_max = 0b0001
 
     u_both = east | west
     v_both = north | south
     all = u_both | v_both
+
+
+# All possible bevel flags.
+BEVEL_COMBOS = [Bevels(i) for i in range(2**4)]
 
 
 # Given the two bevel options, determine the correct texturing
@@ -119,11 +123,11 @@ _BEVEL_BACK_SCALE_SINGLE = {
 }
 # The above for both axes, pre-calculated for every bevel.
 BEVEL_BACK_SCALE = {
-    (bevel := Bevels(i)): (
+    bevel: (
         _BEVEL_BACK_SCALE_SINGLE[Bevels.u_min in bevel, Bevels.u_max in bevel],
         _BEVEL_BACK_SCALE_SINGLE[Bevels.v_min in bevel, Bevels.v_max in bevel],
     )
-    for i in range(2**4)
+    for bevel in BEVEL_COMBOS
 }
 del _BEVEL_BACK_SCALE_SINGLE
 type Axis = Literal[-1, 0, +1]
@@ -894,7 +898,6 @@ class TileDef:
         panels: A list of "panels" for the tiledef, allowing moving or split parts.
           If present, each of these "steals" some UV positions and instead
           generates them (potentially offset) as a brush entity.
-        force_antigel: If this is marked to not accept gel.
     """
     __slots__ = [
         'pos',
@@ -906,7 +909,6 @@ class TileDef:
         'bullseye_count',
         '_portal_helper',
         'panels',
-        'force_antigel',
     ]
 
     pos: Vec
@@ -938,7 +940,6 @@ class TileDef:
         self.panels = []
         self.bullseye_count = 0
         self._portal_helper = 1 if has_helper else 0
-        self.force_antigel = False
 
     @property
     def pos_voxel(self) -> Vec:
@@ -1065,6 +1066,9 @@ class TileDef:
         # This violates the _sub_tiles type definition.
         self._get_subtiles()[SUBTILE_FIZZ_KEY] = cast(TileType, axis)
 
+    def get_fizz_orient(self) -> Literal['u', 'v'] | None:
+        return self._get_subtiles().get(SUBTILE_FIZZ_KEY, None)  # type: ignore
+
     def uv_offset(self, u: float, v: float, norm: float) -> Vec:
         """Return an u/v offset from our position.
 
@@ -1161,8 +1165,6 @@ class TileDef:
 
     def is_antigel(self) -> bool:
         """Check if this tile is at an antigel position."""
-        if self.force_antigel:
-            return True
         try:
             plane = texturing.ANTIGEL_BY_NORMAL[self.normal.freeze()]
         except KeyError:
@@ -1395,9 +1397,7 @@ class TileDef:
                 (umin + umax) * 16 - 64,
                 (vmin + vmax) * 16 - 64,
                 offset,
-            )
-            if vec_offset is not None:
-                tile_center += vec_offset
+            ) + vec_offset
 
             if tile_type.is_tile:
                 # These types force a specific grid size.
@@ -1502,7 +1502,7 @@ class TileDef:
 
     def is_simple(self) -> bool:
         """Check if this tile is a simple tile that can merge with neighbours."""
-        if self.panels or self.bullseye_count > 0 or self.override is not None:
+        if self.panels or self.bullseye_count > 0:
             return False
 
         return True
@@ -2155,7 +2155,7 @@ def bevel_split(
             for v in v_range
         ]
         bevel_umaxes: list[Bevels] = [
-            Bevels.u_max if tile_pos[max_u, v].should_bevel(1, 0) else Bevels.none
+            Bevels.u_max if tile_pos[max_u, v].should_bevel(+1, 0) else Bevels.none
             for v in v_range
         ]
         bevel_vmins: list[Bevels] = [
@@ -2163,7 +2163,7 @@ def bevel_split(
             for u in u_range
         ]
         bevel_vmaxes: list[Bevels] = [
-            Bevels.v_max if tile_pos[u, max_v].should_bevel(0, 1) else Bevels.none
+            Bevels.v_max if tile_pos[u, max_v].should_bevel(0, +1) else Bevels.none
             for u in u_range
         ]
 

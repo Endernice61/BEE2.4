@@ -20,7 +20,7 @@ from async_util import run_as_task
 import utils
 
 
-LOGGER = get_logger(__name__)
+LOGGER = get_logger('app', alias='app')
 # The nursery where UI tasks etc are run in.
 _APP_NURSERY: trio.Nursery | None = None
 # This is quit to exit the sleep_forever(), beginning the shutdown process.
@@ -51,7 +51,7 @@ if utils.WIN:
 
 def quit_app() -> None:
     """Quit the application."""
-    QUIT_SCOPE.cancel()
+    QUIT_SCOPE.cancel('app quit')
 
 
 def restart() -> None:
@@ -61,7 +61,7 @@ def restart() -> None:
     """
     global _WANTS_RESTART
     _WANTS_RESTART = True
-    QUIT_SCOPE.cancel()
+    QUIT_SCOPE.cancel('app restart')
 
 
 # noinspection PyBroadException
@@ -109,7 +109,7 @@ def on_error(
             ).format(err=err)),
         )
     except Exception:
-        pass
+        LOGGER.exception('Failed to show messages:')
 
     try:
         import config
@@ -124,7 +124,7 @@ def on_error(
         config.APP.write_file(config.APP_LOC)
     except Exception:
         # Ignore failures...
-        pass
+        LOGGER.exception('Failed to enable log window:')
 
 
 @deprecated('Pass the core nursery down instead.')

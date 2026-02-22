@@ -144,6 +144,10 @@ def analyse_and_modify(
 
     elev_override indicates if we force the player to spawn in the elevator.
     """
+    
+    # The arrival departure transition entities.
+    file_transition_ents = instanceLocs.resolve_filter('[transitionEnts]')
+    
     # The three elevators.
     file_coop_exit = instanceLocs.resolve_filter('[coopExit]')
     file_sp_exit = instanceLocs.resolve_filter('[spExit]')
@@ -169,7 +173,9 @@ def analyse_and_modify(
     # Use sets, so we can detect contradictory instances.
     seen_no_player_start: set[bool] = set()
     seen_game_modes: set[GameMode] = set()
-
+    
+    inst_transition_ents: Entity | None = None
+    
     inst_elev_entry: Entity | None = None
     inst_elev_exit: Entity | None = None
 
@@ -262,6 +268,9 @@ def analyse_and_modify(
                 item.fixup['no_player_start'] = '1'
             item['targetname'] = 'elev_exit'
             inst_elev_exit = item
+        elif file in file_transition_ents:
+            item['targetname'] = 'transition_ents'
+            inst_transition_ents = item
         # Skip frames and include the chosen corridor
         filenames[file] += 1
 
@@ -314,6 +323,10 @@ def analyse_and_modify(
         Direction.ENTRY: chosen_entry,
         Direction.EXIT: chosen_exit,
     })
+    
+    # Components for the player spawn location have been moved to the transition instance
+    if inst_transition_ents is not None:
+        inst_transition_ents.fixup['no_player_start'] = game_mode is GameMode.COOP or is_publishing or elev_override
 
     LOGGER.info('Map global info: {}', info)
     return info
