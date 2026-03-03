@@ -2,16 +2,19 @@
 """
 from __future__ import annotations
 
+from collections import defaultdict
+
+import attrs
 from srctools import Keyvalues, Vec, Entity, Output, VMF, Matrix
+from srctools.math import FrozenVec
 
 import srctools.logger
-from precomp import instanceLocs, template_brush, conditions
+from precomp import instanceLocs, template_brush, conditions, connections
+from precomp.connections import ITEMS, Item
 import consts
-
 
 COND_MOD_NAME: str | None = None
 LOGGER = srctools.logger.get_logger(__name__, alias='cond.conveyorBelt')
-
 
 @conditions.make_result('ConveyorBelt')
 def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
@@ -37,7 +40,58 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
         * `NoPortalFloor`: If set, add a `func_noportal_volume` on the floor
           under the track.
         * `PaintFizzler`: If set, add a paint fizzler underneath the belt.
+
+    New conveyor belt requires more options since we generate the middle.
+    * New Options
+        * `New`: Are we generating a new conveyor belt type
+        * `MarkerInst`: The instance set in editoritems.
+        * `TrackInst`: The track the segments ride on
+        * `LogicInst`: The logic for the segments
+        * `SupportInst`: If there is a block under the conveyor, add supports
     """
+    new_conveyor = instanceLocs.resolve_one(res['New', '0'], error=False)
+
+    if(new_conveyor):
+        # Generate our new conveyor instead
+
+        inst_name = inst['targetname'].casefold()
+        inst_file = inst['file'].casefold()
+        
+        item = ITEMS[inst_name]
+
+        if not item.outputs:
+            # Item has no outputs and is probably an end
+            return
+
+        LOGGER.info("Generating Conveyor Belt " + inst_name)
+
+        end_item: Item
+
+        for output in item.outputs:
+            conn_item = output.to_item
+            if conn_item.inst['file'].casefold() == inst_file:
+                end_item = conn_item
+                for conn_output in conn_item.outputs:
+                    if conn_output.to_item.name == item.name:
+                        raise ValueError('Cyclical Conveyor Belt connection (ends are connected to eachother)!')
+            else:
+                raise ValueError('Conveyor Belt connected to non-conveyor belt!')
+
+        try:
+            end_item
+        except NameError:
+            LOGGER.info(f"Conveyor belt {inst_name} has no end instance")
+            return
+
+        item.delete_antlines()
+
+        end_item.inst.remove()
+        inst.remove()
+
+        return
+    
+    LOGGER.info("Generating old Conveyor Belt: " + inst['targetname'].casefold())
+
     move_dist = inst.fixup.int('$travel_distance')
 
     if move_dist <= 256:
