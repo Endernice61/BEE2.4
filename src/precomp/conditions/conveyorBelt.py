@@ -16,6 +16,20 @@ import consts
 COND_MOD_NAME: str | None = None
 LOGGER = srctools.logger.get_logger(__name__, alias='cond.conveyorBelt')
 
+@attrs.define
+class Marker:
+    """A single node point."""
+    ent: Entity = attrs.field(on_setattr=attrs.setters.frozen)
+    orient: Matrix = attrs.field(init=False, on_setattr=attrs.setters.frozen)
+
+    # noinspection PyUnresolvedReferences
+    @orient.default # type: ignore
+    def _init_orient(self) -> Matrix:
+        """We need to rotate the orient, because items have forward as negative X."""
+        rot = Matrix.from_angstr(self.ent['angles'])
+        return Matrix.from_yaw(180) @ rot
+
+
 @conditions.make_result('ConveyorBelt')
 def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
     """Create a conveyor belt.
@@ -49,9 +63,9 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
         * `LogicInst`: The logic for the segments
         * `SupportInst`: If there is a block under the conveyor, add supports
     """
-    new_conveyor = instanceLocs.resolve_one(res['New', '0'], error=False)
+    new_conveyor: bool = res.bool('New', False)
 
-    if(new_conveyor):
+    if new_conveyor:
         # Generate our new conveyor instead
 
         inst_name = inst['targetname'].casefold()
@@ -65,29 +79,163 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
 
         LOGGER.info("Generating Conveyor Belt " + inst_name)
 
-        end_item: Item
+        start_marker = Marker(inst)
+        end_marker_dict: dict[str, Marker] = {}
 
         for output in item.outputs:
             conn_item = output.to_item
-            if conn_item.inst['file'].casefold() == inst_file:
-                end_item = conn_item
+            conn_inst = conn_item.inst
+            if conn_inst['file'].casefold() == inst_file:
+                if end_marker_dict:
+                    raise ValueError(f'Conveyor belt {inst_name} has two connections!')
+                end_marker_dict[conn_inst['file']] = Marker(conn_inst)
                 for conn_output in conn_item.outputs:
                     if conn_output.to_item.name == item.name:
                         raise ValueError('Cyclical Conveyor Belt connection (ends are connected to eachother)!')
             else:
-                raise ValueError('Conveyor Belt connected to non-conveyor belt!')
+                raise ValueError(f'Conveyor Belt {inst_name} connected to non-conveyor belt!')
 
-        try:
-            end_item
-        except NameError:
+        if not end_marker_dict:
             LOGGER.info(f"Conveyor belt {inst_name} has no end instance")
             return
+        
+        end_marker = end_marker_dict[inst_file]
 
         item.delete_antlines()
 
-        end_item.inst.remove()
+        start_pos = Vec.from_str(inst['origin'])
+        end_pos = Vec.from_str(end_marker.ent['origin'])
+
+        # We need the up norm because they're wall mounted
+        start_norm = start_marker.orient.forward()
+        end_norm = end_marker.orient.forward()
+
+        # These checks are incredibly messy, simplify them later
+        if start_norm.axis() == 'x':
+            if not start_pos.y == end_pos.y and not start_pos.z == end_pos.z:
+                raise ValueError(f'Conveyor Belts are not in line (x axis) {start_pos} {end_pos}')
+        if start_norm.axis() == 'y':
+            if not start_pos.x == end_pos.x and not start_pos.z == end_pos.z:
+                raise ValueError(f'Conveyor Belts are not in line (y axis) {start_pos} {end_pos}')
+        if start_norm.axis() == 'z':
+            if not start_pos.x == end_pos.x and not start_pos.y == end_pos.y:
+                raise ValueError(f'Conveyor Belts are not in line (z axis) {start_pos} {end_pos}')
+        if not start_norm == -end_norm:
+            raise ValueError(f'Conveyor Belts are not facing eachother {start_norm} {end_norm}')
+
+        segment_inst_file = instanceLocs.resolve_one(res['SegmentInst', ''], error=False)
+        track_inst_file = instanceLocs.resolve_one(res['TrackInst', ''], error=False)
+
+        offset = 256
+        track_name = conditions.local_name(inst, 'segment_{}')
+        track_start: Vec = start_pos + Vec(offset, 0, 32) @ start_norm.to_angle()
+        track_end: Vec = end_pos + (Vec(offset, 0, 32) @ end_norm.to_angle())
+
+        track_speed = res['speed', None]
+
+        last_track = None
+        # first_track = None
+
+        teleport_to_start = res.bool('TrackTeleport', True)
+
+        norm = start_marker.orient.up()
+
+        if res.bool('rotateSegments', True):
+            orient = Matrix.from_basis(x=start_norm, z=norm)
+            inst['angles'] = orient.to_angle()
+        else:
+            orient = start_marker.orient
+
+        for index, pos in enumerate(track_start.iter_line(track_end, stride=128), start=1):
+            track_enum_name = track_name.format(index) + '-track'
+
+            track = vmf.create_ent(
+                classname='path_track',
+                targetname=track_enum_name,
+                origin=pos,
+                # spawnflags=4,
+                spawnflags=0,
+                orientationtype=0,  # Don't rotate
+                # altpath = '',
+            )
+
+            if track_speed is not None:
+                track['speed'] = track_speed
+            if last_track:
+                last_track['target'] = track['targetname']
+                # last_track['altpath'] = track['targetname']
+
+            if index == 1 and teleport_to_start:
+                track['spawnflags'] = 16  # Teleport here..
+                # track['spawnflags'] = 20  # Teleport here..
+                # first_track = track
+
+            last_track = track
+
+            # Don't place at the last point - it doesn't teleport correctly,
+            # and would be one too many.
+            if segment_inst_file and pos != track_end:
+                seg_inst = conditions.add_inst(
+                    vmf,
+                    targetname=track_name.format(index),
+                    file=segment_inst_file,
+                    origin=start_pos, #spawn these at the same spot so they have the same lighting
+                    angles=orient,
+                )
+                seg_inst.fixup.update(inst.fixup)
+
+        if teleport_to_start and last_track is not None:
+            # Link back to the first track...
+            last_track['target'] = track_name.format(1) + '-track'
+
+        # if teleport_to_start and first_track is not None and last_track is not None:
+        #     vmf.create_ent(
+        #         classname='path_track',
+        #         targetname=first_track['targetname'] + '-rev',
+        #         origin=first_track['origin'],
+        #         spawnflags=20,
+        #         orientationtype=0,  # Don't rotate
+        #         target = first_track['targetname'],
+        #         altpath = first_track['targetname'],
+        #     )
+        #     # first_track['altpath'] = first_track['targetname'] + '-rev'
+        #     vmf.create_ent(
+        #         classname='path_track',
+        #         targetname=last_track['targetname'] + '-rev',
+        #         origin=last_track['origin'],
+        #         spawnflags=20,
+        #         orientationtype=0,  # Don't rotate
+        #         target = first_track['targetname'] + '-rev',
+        #         altpath = first_track['targetname'] + '-rev',
+        #     )
+        #     last_track['altpath'] = last_track['targetname'] + '-rev'
+
+
+
+            # Allow adding outputs to the last path_track.
+        if last_track is not None:
+            for prop in res.find_all('EndOutput'):
+                output = Output.parse(prop)
+                output.output = 'OnPass'
+                output.inst_out = None
+                output.comma_sep = False
+                output.target = conditions.local_name(inst, output.target)
+                last_track.add_out(output)
+
+        for index, pos in enumerate(start_pos.iter_line(end_pos, stride=128), start=1):
+            conditions.add_inst(
+                vmf,
+                targetname=inst_name + f'-track{index}',
+                file=track_inst_file,
+                origin=pos, #spawn these at the same spot so they have the same lighting
+                angles=start_marker.orient,
+            )
+
+        end_marker.ent.remove()
         inst.remove()
 
+        # END OF NEW CONVEYOR BELTS
+        #--------------------------
         return
     
     LOGGER.info("Generating old Conveyor Belt: " + inst['targetname'].casefold())
