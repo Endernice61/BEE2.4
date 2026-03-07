@@ -20,6 +20,10 @@ LOGGER = srctools.logger.get_logger(__name__, alias='cond.conveyorBelt')
 class Marker:
     """A single node point."""
     ent: Entity = attrs.field(on_setattr=attrs.setters.frozen)
+    name: str
+    file: str
+    pos: Vec
+    item: Item
     orient: Matrix = attrs.field(init=False, on_setattr=attrs.setters.frozen)
 
     # noinspection PyUnresolvedReferences
@@ -33,8 +37,21 @@ class Marker:
 @conditions.make_result('ConveyorBelt')
 def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
     """Create a conveyor belt.
-
     * Options:
+        * `New`: Are we generating a new conveyor belt type?
+        * `EndInst`: Instance for the end of the conveyor belts.
+          Added in precomp so instance names are the same.
+        * `SegmentInst`: The instance for the conveyor belt segments.
+        * `TrackInst`: The track the segments ride on.
+        * `Speed`: The fixup or number for the belt speed.
+        * `MotionTrig`: If set, a trigger_multiple will be spawned that
+          `EnableMotion`s weighted cubes. The value is the name of the relevant filter.
+        * `BeamKeys`: If set, a list of keyvalues to use to generate an env_beam
+          travelling from start to end. The origin is treated specially - X is
+          the distance from walls, y is the distance to the side, and z is the
+          height.
+
+    * Old Options:
         * `SegmentInst`: Generated at each square. (`track` is the name of the
           path to attach to.)
         * `TrackTeleport`: Set the track points so they teleport trains to the start.
@@ -55,94 +72,105 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
           under the track.
         * `PaintFizzler`: If set, add a paint fizzler underneath the belt.
 
-    New conveyor belt requires more options since we generate the middle.
-    * New Options
-        * `New`: Are we generating a new conveyor belt type?
-        * `SegmentInst`: The instance for the conveyor belt segments.
-        * `TrackInst`: The track the segments ride on.
     """
     new_conveyor: bool = res.bool('New', False)
 
     if new_conveyor:
         # Generate our new conveyor instead
 
-        inst_name = inst['targetname'].casefold()
-        inst_file = inst['file'].casefold()
-        
-        item = ITEMS[inst_name]
+        mark1 = Marker(
+            inst,
+            inst["targetname"],
+            inst["file"],
+            inst.get_origin(),
+            ITEMS[inst["targetname"]],
+            )
 
-        if not item.outputs:
+        if not mark1.item.outputs:
             # Item has no outputs and is probably an end\
             #LOGGER.info("Conveyor Belt " + inst_name + " has no outputs")
             return
 
-        LOGGER.info("Generating Conveyor Belt " + inst_name)
+        LOGGER.info("Generating Conveyor Belt " + mark1.name)
 
-        start_marker = Marker(inst)
-        end_marker_dict: dict[str, Marker] = {}
+        mark2: Marker | None = None
 
-        for output in item.outputs:
+        for output in mark1.item.outputs:
             conn_item = output.to_item
             conn_inst = conn_item.inst
-            if conn_inst['file'].casefold() == inst_file:
-                if end_marker_dict:
-                    raise ValueError(f'Conveyor belt {inst_name} has two connections!')
-                end_marker_dict[conn_inst['file']] = Marker(conn_inst)
-                for conn_output in conn_item.outputs:
-                    if conn_output.to_item.name == item.name:
+            if conn_inst['file'].casefold() == mark1.file:
+                if mark2 is not None:
+                    raise ValueError(f'Conveyor belt {mark1.name} has two connections!')
+                mark2 = Marker(
+                    conn_inst,
+                    conn_inst["targetname"],
+                    conn_inst["file"],
+                    conn_inst.get_origin(),
+                    conn_item,
+                    )
+                for conn_output in mark2.item.outputs:
+                    if conn_output.to_item.name == mark1.item.name:
                         raise ValueError('Cyclical Conveyor Belt connection (ends are connected to eachother)!')
             else:
-                raise ValueError(f'Conveyor Belt {inst_name} connected to non-conveyor belt!')
+                raise ValueError(f'Conveyor Belt {mark1.name} connected to non-conveyor belt!')
 
-        if not end_marker_dict:
-            LOGGER.info(f"Conveyor belt {inst_name} has no end instance")
+        if mark2 is None:
+            LOGGER.info(f"Conveyor belt {mark1} has no end instance")
             return
-        
-        end_marker = end_marker_dict[inst_file]
 
-        item.delete_antlines()
+        mark1.item.delete_antlines()
 
-        start_pos = Vec.from_str(inst['origin'])
-        end_pos = Vec.from_str(end_marker.ent['origin'])
-
-        # We need the up norm because they're wall mounted
-        start_norm = start_marker.orient.forward()
-        end_norm = end_marker.orient.forward()
-
-        size_vec = abs((start_pos + (Vec(64, 0, 0) @ start_norm.to_angle())) - (end_pos + (Vec(64, 0, 0) @ end_norm.to_angle())))
+        size_vec = abs((mark1.pos + (Vec(64, 0, 0) @ mark1.orient)) - (mark2.pos + (Vec(64, 0, 0) @ mark2.orient)))
         size: int = int((size_vec.x + size_vec.y + size_vec.z) / 128)
         #LOGGER.info("Belt Size: " + str(size))
 
         inst.fixup['$size'] = size
 
         # These checks are incredibly messy, simplify them later
-        if start_norm.axis() == 'x':
-            if not start_pos.y == end_pos.y and not start_pos.z == end_pos.z:
-                raise ValueError(f'Conveyor Belts are not in line (x axis) {start_pos} {end_pos}')
-        if start_norm.axis() == 'y':
-            if not start_pos.x == end_pos.x and not start_pos.z == end_pos.z:
-                raise ValueError(f'Conveyor Belts are not in line (y axis) {start_pos} {end_pos}')
-        if start_norm.axis() == 'z':
-            if not start_pos.x == end_pos.x and not start_pos.y == end_pos.y:
-                raise ValueError(f'Conveyor Belts are not in line (z axis) {start_pos} {end_pos}')
-        if not start_norm == -end_norm:
-            raise ValueError(f'Conveyor Belts are not facing eachother {start_norm} {end_norm}')
+        if mark1.orient.forward().axis() == 'x':
+            if not mark1.pos.y == mark2.pos.y and not mark1.pos.z == mark2.pos.z:
+                raise ValueError(f'Conveyor Belts are not in line (x axis) {mark1.pos} {mark2.pos}')
+        if mark1.orient.forward().axis() == 'y':
+            if not mark1.pos.x == mark2.pos.x and not mark1.pos.z == mark2.pos.z:
+                raise ValueError(f'Conveyor Belts are not in line (y axis) {mark1.pos} {mark2.pos}')
+        if mark1.orient.forward().axis() == 'z':
+            if not mark1.pos.x == mark2.pos.x and not mark1.pos.y == mark2.pos.y:
+                raise ValueError(f'Conveyor Belts are not in line (z axis) {mark1.pos} {mark2.pos}')
+        if not mark1.orient.forward() == -mark2.orient.forward():
+            raise ValueError(f'Conveyor Belts are not facing eachother {mark1.orient.forward()} {mark2.orient.forward()}')
 
+        end_inst_file = instanceLocs.resolve_one(res['EndInst', ''], error=False)
         segment_inst_file = instanceLocs.resolve_one(res['SegmentInst', ''], error=False)
         track_inst_file = instanceLocs.resolve_one(res['TrackInst', ''], error=False)
+    
+        conditions.add_inst(
+                vmf,
+                targetname=mark1.name,
+                file=end_inst_file,
+                origin=mark1.pos,
+                angles=mark1.orient,
+            )
+        
+        conditions.add_inst(
+                vmf,
+                targetname=mark1.name,
+                file=end_inst_file,
+                origin=mark2.pos,
+                angles=mark2.orient,
+            )
 
         offset = 256
         track_name = conditions.local_name(inst, '&segment{}')
-        track_start: Vec = start_pos + Vec(offset, 0, 32) @ start_norm.to_angle()
-        track_end: Vec = end_pos + (Vec(offset, 0, 32) @ end_norm.to_angle())
+        track_start: Vec = mark1.pos + (Vec(offset, 0, 32) @  mark1.orient)
+        track_end: Vec = mark2.pos + (Vec(offset, 0, 32) @ mark2.orient)
 
-        norm = start_marker.orient.up()
+        norm = mark1.orient.up()
 
         if res.bool('rotateSegments', True):
-            orient = Matrix.from_basis(x=start_norm, z=norm)
+            orient = Matrix.from_basis(x=mark1.orient.forward(), z=norm)
             inst['angles'] = orient.to_angle()
         else:
-            orient = start_marker.orient
+            orient = mark1.orient
 
         for index, pos in enumerate(track_start.iter_line(track_end, stride=128), start=1):
             # Don't place at the last point - it doesn't teleport correctly,
@@ -152,22 +180,85 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
                     vmf,
                     targetname=track_name.format(index),
                     file=segment_inst_file,
-                    origin=start_pos, #spawn these at the same spot so they have the same lighting
+                    origin=mark1.pos, #spawn these at the same spot so they have the same lighting
                     angles=orient,
                 )
-                seg_inst.fixup.update(inst.fixup)
+                #seg_inst.fixup.update(inst.fixup)
 
-        for index, pos in enumerate(start_pos.iter_line(end_pos, stride=128), start=1):
+        for index, pos in enumerate(mark1.pos.iter_line(mark2.pos, stride=128), start=1):
             conditions.add_inst(
                 vmf,
-                targetname=inst_name + f'-track{index}',
+                targetname=mark1.name + f'-track{index}',
                 file=track_inst_file,
                 origin=pos,
-                angles=start_marker.orient,
+                angles=mark1.orient,
             )
 
-        end_marker.ent.remove()
+        # Add the EnableMotion trigger_multiple seen in platform items.
+        # This wakes up cubes when it starts moving.
+        motion_filter = res['motionTrig', None]
 
+        # Disable on walls, or if the conveyor can't be turned on.
+        if norm != (0, 0, 1) or inst.fixup['$connectioncount'] == '0':
+            motion_filter = None
+        
+        if motion_filter is not None:
+            motion_trig = vmf.create_ent(
+                classname='trigger_multiple',
+                targetname=conditions.local_name(inst, 'enable_motion_trig'),
+                origin=mark1.pos,
+                filtername=motion_filter,
+                startDisabled=1,
+                wait=0.1,
+            )
+            motion_trig.add_out(Output('OnStartTouch', '!activator', 'ExitDisabledState'))
+            # Match the size of the original...
+            motion_trig.solids.append(vmf.make_prism(
+                mark1.pos + Vec(72, -56, 58) @ orient,
+                mark2.pos + Vec(-72, 56, 144) @ orient,
+                mat=consts.Tools.TRIGGER,
+            ).solid)
+
+        push_speed = res['speed', None]
+        if push_speed is None:
+            push_speed = inst.fixup['$speed']
+        if push_speed is not None and norm == (0, 0, 1):
+            push_trig = vmf.create_ent(
+                classname='trigger_push',
+                targetname=conditions.local_name(inst, 'push'),
+                spawnflags=4097,
+                origin=mark1.pos,
+                startDisabled=1,
+                speed=int(push_speed)*128,
+                wait=0.1,
+            )
+            push_trig.solids.append(vmf.make_prism(
+                mark1.pos + Vec(64, -60, 59) @ orient,
+                mark2.pos + Vec(-64, 60, 60) @ orient,
+                mat=consts.Tools.TRIGGER,
+            ).solid)
+
+        # A brush covering under the platform.
+        base_trig = vmf.make_prism(
+            mark1.pos + Vec(64, 60, 50) @ orient,
+            mark2.pos + Vec(-64, -60, 58) @ orient,
+            mat=consts.Tools.INVISIBLE,
+        ).solid
+
+        vmf.add_brush(base_trig)
+
+        # Make a paint_cleanser under the belt..
+        if res.bool('PaintFizzler'):
+            pfizz = vmf.create_ent(
+                classname='trigger_paint_cleanser',
+                origin=mark1.pos,
+            )
+            pfizz.solids.append(base_trig.copy())
+            for face in pfizz.sides():
+                face.mat = consts.Tools.TRIGGER
+
+        mark2.ent.remove()
+            
         # END OF NEW CONVEYOR BELTS
         #--------------------------
         return
@@ -365,3 +456,4 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
         pfizz.solids.append(base_trig.copy())
         for face in pfizz.sides():
             face.mat = consts.Tools.TRIGGER
+
