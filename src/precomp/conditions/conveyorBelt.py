@@ -57,11 +57,9 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
 
     New conveyor belt requires more options since we generate the middle.
     * New Options
-        * `New`: Are we generating a new conveyor belt type
-        * `MarkerInst`: The instance set in editoritems.
-        * `TrackInst`: The track the segments ride on
-        * `LogicInst`: The logic for the segments
-        * `SupportInst`: If there is a block under the conveyor, add supports
+        * `New`: Are we generating a new conveyor belt type?
+        * `SegmentInst`: The instance for the conveyor belt segments.
+        * `TrackInst`: The track the segments ride on.
     """
     new_conveyor: bool = res.bool('New', False)
 
@@ -74,7 +72,8 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
         item = ITEMS[inst_name]
 
         if not item.outputs:
-            # Item has no outputs and is probably an end
+            # Item has no outputs and is probably an end\
+            #LOGGER.info("Conveyor Belt " + inst_name + " has no outputs")
             return
 
         LOGGER.info("Generating Conveyor Belt " + inst_name)
@@ -110,6 +109,12 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
         start_norm = start_marker.orient.forward()
         end_norm = end_marker.orient.forward()
 
+        size_vec = abs((start_pos + (Vec(64, 0, 0) @ start_norm.to_angle())) - (end_pos + (Vec(64, 0, 0) @ end_norm.to_angle())))
+        size: int = int((size_vec.x + size_vec.y + size_vec.z) / 128)
+        #LOGGER.info("Belt Size: " + str(size))
+
+        inst.fixup['$size'] = size
+
         # These checks are incredibly messy, simplify them later
         if start_norm.axis() == 'x':
             if not start_pos.y == end_pos.y and not start_pos.z == end_pos.z:
@@ -127,16 +132,9 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
         track_inst_file = instanceLocs.resolve_one(res['TrackInst', ''], error=False)
 
         offset = 256
-        track_name = conditions.local_name(inst, 'segment_{}')
+        track_name = conditions.local_name(inst, '&segment{}')
         track_start: Vec = start_pos + Vec(offset, 0, 32) @ start_norm.to_angle()
         track_end: Vec = end_pos + (Vec(offset, 0, 32) @ end_norm.to_angle())
-
-        track_speed = res['speed', None]
-
-        last_track = None
-        # first_track = None
-
-        teleport_to_start = res.bool('TrackTeleport', True)
 
         norm = start_marker.orient.up()
 
@@ -147,31 +145,6 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
             orient = start_marker.orient
 
         for index, pos in enumerate(track_start.iter_line(track_end, stride=128), start=1):
-            track_enum_name = track_name.format(index) + '-track'
-
-            track = vmf.create_ent(
-                classname='path_track',
-                targetname=track_enum_name,
-                origin=pos,
-                # spawnflags=4,
-                spawnflags=0,
-                orientationtype=0,  # Don't rotate
-                # altpath = '',
-            )
-
-            if track_speed is not None:
-                track['speed'] = track_speed
-            if last_track:
-                last_track['target'] = track['targetname']
-                # last_track['altpath'] = track['targetname']
-
-            if index == 1 and teleport_to_start:
-                track['spawnflags'] = 16  # Teleport here..
-                # track['spawnflags'] = 20  # Teleport here..
-                # first_track = track
-
-            last_track = track
-
             # Don't place at the last point - it doesn't teleport correctly,
             # and would be one too many.
             if segment_inst_file and pos != track_end:
@@ -184,55 +157,16 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
                 )
                 seg_inst.fixup.update(inst.fixup)
 
-        if teleport_to_start and last_track is not None:
-            # Link back to the first track...
-            last_track['target'] = track_name.format(1) + '-track'
-
-        # if teleport_to_start and first_track is not None and last_track is not None:
-        #     vmf.create_ent(
-        #         classname='path_track',
-        #         targetname=first_track['targetname'] + '-rev',
-        #         origin=first_track['origin'],
-        #         spawnflags=20,
-        #         orientationtype=0,  # Don't rotate
-        #         target = first_track['targetname'],
-        #         altpath = first_track['targetname'],
-        #     )
-        #     # first_track['altpath'] = first_track['targetname'] + '-rev'
-        #     vmf.create_ent(
-        #         classname='path_track',
-        #         targetname=last_track['targetname'] + '-rev',
-        #         origin=last_track['origin'],
-        #         spawnflags=20,
-        #         orientationtype=0,  # Don't rotate
-        #         target = first_track['targetname'] + '-rev',
-        #         altpath = first_track['targetname'] + '-rev',
-        #     )
-        #     last_track['altpath'] = last_track['targetname'] + '-rev'
-
-
-
-            # Allow adding outputs to the last path_track.
-        if last_track is not None:
-            for prop in res.find_all('EndOutput'):
-                output = Output.parse(prop)
-                output.output = 'OnPass'
-                output.inst_out = None
-                output.comma_sep = False
-                output.target = conditions.local_name(inst, output.target)
-                last_track.add_out(output)
-
         for index, pos in enumerate(start_pos.iter_line(end_pos, stride=128), start=1):
             conditions.add_inst(
                 vmf,
                 targetname=inst_name + f'-track{index}',
                 file=track_inst_file,
-                origin=pos, #spawn these at the same spot so they have the same lighting
+                origin=pos,
                 angles=start_marker.orient,
             )
 
         end_marker.ent.remove()
-        inst.remove()
 
         # END OF NEW CONVEYOR BELTS
         #--------------------------
