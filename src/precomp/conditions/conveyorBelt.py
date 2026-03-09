@@ -126,18 +126,15 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
 
         inst.fixup['$size'] = size
 
-        # These checks are incredibly messy, simplify them later
-        if mark1.orient.forward().axis() == 'x':
-            if not mark1.pos.y == mark2.pos.y and not mark1.pos.z == mark2.pos.z:
-                raise ValueError(f'Conveyor Belts are not in line (x axis) {mark1.pos} {mark2.pos}')
-        if mark1.orient.forward().axis() == 'y':
-            if not mark1.pos.x == mark2.pos.x and not mark1.pos.z == mark2.pos.z:
-                raise ValueError(f'Conveyor Belts are not in line (y axis) {mark1.pos} {mark2.pos}')
-        if mark1.orient.forward().axis() == 'z':
-            if not mark1.pos.x == mark2.pos.x and not mark1.pos.y == mark2.pos.y:
-                raise ValueError(f'Conveyor Belts are not in line (z axis) {mark1.pos} {mark2.pos}')
-        if not mark1.orient.forward() == -mark2.orient.forward():
+        # Check if axis, facing, and up vector match
+        marks_dist_between: Vec = mark1.pos - mark2.pos
+        marks_vec_between: Vec = marks_dist_between.norm()
+        if marks_dist_between.mag() > 1 and not Vec.dot(mark1.orient.forward(), marks_vec_between) > 0.9999:
+            raise ValueError(f'Conveyor Belts are not in line {mark1.pos} {mark2.pos} {marks_vec_between.len()}')
+        if not Vec.dot(mark1.orient.forward(), mark2.orient.forward()) < -0.9999:
             raise ValueError(f'Conveyor Belts are not facing eachother {mark1.orient.forward()} {mark2.orient.forward()}')
+        if not Vec.dot(mark1.orient.up(), mark2.orient.up()) > 0.9999:
+            raise ValueError(f'Conveyor Belts do not share the same rotation {mark1.orient.up()} {mark2.orient.up()}')
 
         end_inst_file = instanceLocs.resolve_one(res['EndInst', ''], error=False)
         segment_inst_file = instanceLocs.resolve_one(res['SegmentInst', ''], error=False)
