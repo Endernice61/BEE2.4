@@ -2,14 +2,11 @@
 """
 from __future__ import annotations
 
-from collections import defaultdict
-
 import attrs
 from srctools import Keyvalues, Vec, Entity, Output, VMF, Matrix
-from srctools.math import FrozenVec
 
 import srctools.logger
-from precomp import instanceLocs, template_brush, conditions, connections
+from precomp import instanceLocs, template_brush, conditions
 from precomp.connections import ITEMS, Item
 import consts
 
@@ -95,7 +92,7 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
 
         mark2: Marker | None = None
 
-        for output in mark1.item.outputs:
+        for output in list(mark1.item.outputs)[:]:
             conn_item = output.to_item
             conn_inst = conn_item.inst
             if conn_inst['file'].casefold() == mark1.file:
@@ -111,6 +108,7 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
                 for conn_output in mark2.item.outputs:
                     if conn_output.to_item.name == mark1.item.name:
                         raise ValueError('Cyclical Conveyor Belt connection (ends are connected to eachother)!')
+                output.remove()
             else:
                 raise ValueError(f'Conveyor Belt {mark1.name} connected to non-conveyor belt!')
 
@@ -119,6 +117,12 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
             return
 
         mark1.item.delete_antlines()
+
+        for conn in list(mark2.item.inputs)[:]:
+            conn.to_item = mark1.item
+        
+        conn_count = len(mark1.item.inputs)
+        no_conn = conn_count == 0 and not bool(int(inst.fixup['$start_enabled']))
 
         size_vec = abs((mark1.pos + (Vec(64, 0, 0) @ mark1.orient)) - (mark2.pos + (Vec(64, 0, 0) @ mark2.orient)))
         size: int = int((size_vec.x + size_vec.y + size_vec.z) / 128)
@@ -129,6 +133,7 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
         # Check if axis, facing, and up vector match
         marks_dist_between: Vec = mark1.pos - mark2.pos
         marks_vec_between: Vec = marks_dist_between.norm()
+        marks_mid_pos: Vec = mark1.pos + (mark1.orient.forward() * -(marks_dist_between.mag()/2))
         if marks_dist_between.mag() > 1 and not Vec.dot(mark1.orient.forward(), marks_vec_between) > 0.9999:
             raise ValueError(f'Conveyor Belts are not in line {mark1.pos} {mark2.pos} {marks_vec_between.len()}')
         if not Vec.dot(mark1.orient.forward(), mark2.orient.forward()) < -0.9999:
@@ -157,7 +162,7 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
             )
 
         offset = 256
-        track_name = conditions.local_name(inst, '&segment{}')
+        track_name = conditions.local_name(inst, 'segment{}')
         track_start: Vec = mark1.pos + (Vec(offset, 0, 32) @  mark1.orient)
         track_end: Vec = mark2.pos + (Vec(offset, 0, 32) @ mark2.orient)
 
@@ -177,7 +182,7 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
                     vmf,
                     targetname=track_name.format(index),
                     file=segment_inst_file,
-                    origin=mark1.pos, #spawn these at the same spot so they have the same lighting
+                    origin= marks_mid_pos, #spawn these at the same spot so they have the same lighting
                     angles=orient,
                 )
                 #seg_inst.fixup.update(inst.fixup)
@@ -194,10 +199,14 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
         # Add the EnableMotion trigger_multiple seen in platform items.
         # This wakes up cubes when it starts moving.
         motion_filter = res['motionTrig', None]
+        push_speed = res['speed', None]
+        if push_speed is None:
+            push_speed = inst.fixup['$speed']
 
         # Disable on walls, or if the conveyor can't be turned on.
-        if norm != (0, 0, 1) or inst.fixup['$connectioncount'] == '0':
+        if norm != (0, 0, 1) or no_conn:
             motion_filter = None
+            push_speed = None
         
         if motion_filter is not None:
             motion_trig = vmf.create_ent(
@@ -216,10 +225,7 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
                 mat=consts.Tools.TRIGGER,
             ).solid)
 
-        push_speed = res['speed', None]
-        if push_speed is None:
-            push_speed = inst.fixup['$speed']
-        if push_speed is not None and norm == (0, 0, 1):
+        if push_speed is not None:
             push_trig = vmf.create_ent(
                 classname='trigger_push',
                 targetname=conditions.local_name(inst, 'push'),
