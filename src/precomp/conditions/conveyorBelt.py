@@ -206,7 +206,7 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
             potential_lighting_pos.append((score, -(pos - lighting_pos).len_sq(), pos))
         if invalid_pos:
             raise user_errors.UserError(
-                user_errors.TOK_CONVEYOR_OBSTRUCTED,
+                user_errors.TOK_CONVEYOR_OBSTRUCTED, # type: ignore
                 points=[mark1.pos, mark2.pos],
                 voxels=invalid_pos,
             )
@@ -247,16 +247,65 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
         for index, pos in enumerate(mark1.pos.iter_line(mark2.pos, stride=128), start=1):
             track_inst = conditions.add_inst(
                 vmf,
-                targetname=mark1.name + f'-track{index}',
+                targetname=conditions.local_name(inst, f'track{index}'),
                 file=track_inst_file,
                 origin=pos,
                 angles=mark1.orient,
             )
             track_inst.fixup.update(inst.fixup)
 
+        end_filter = vmf.create_ent(
+            classname='filter_activator_name',
+            targetname=conditions.local_name(inst, 'filter_segment'),
+            filtername=conditions.local_name(inst, 'segment*'),
+            origin=mark1.pos,
+        )
+
+        if end_filter is not None:
+            end_trig_start = vmf.create_ent(
+                classname='trigger_multiple',
+                targetname=conditions.local_name(inst, 'end_trig_start'),
+                origin=mark1.pos,
+                filtername=end_filter['targetname'],
+                spawnflags=64,
+                startDisabled=1,
+                wait=0.1,
+            )
+
+            end_trig_start.solids.append(vmf.make_prism(
+                mark1.pos + Vec(296, -60, -60) @ mark1.orient,
+                mark1.pos + Vec(312, 60, 60) @ mark1.orient,
+                mat=consts.Tools.TRIGGER,
+            ).solid)
+
+            end_trig_end = vmf.create_ent(
+                classname='trigger_multiple',
+                targetname=conditions.local_name(inst, 'end_trig_end'),
+                origin=mark2.pos,
+                filtername=end_filter['targetname'],
+                spawnflags=64,
+                startDisabled=1,
+                wait=0.1,
+            )
+
+            end_trig_end.solids.append(vmf.make_prism(
+                mark2.pos + Vec(296, -60, -60) @ mark2.orient,
+                mark2.pos + Vec(312, 60, 60) @ mark2.orient,
+                mat=consts.Tools.TRIGGER,
+            ).solid)
+
+            for prop in res.find_all('EndOutput'):
+                output = Output.parse(prop)
+                output.output = 'OnTrigger'
+                output.inst_out = None
+                output.comma_sep = False
+                output.target = conditions.local_name(inst, output.target)
+                end_trig_start.add_out(output)
+                end_trig_end.add_out(output)
+
         # Add the EnableMotion trigger_multiple seen in platform items.
         # This wakes up cubes when it starts moving.
-        motion_filter = res['motionTrig', None]
+        motion_filter = res['MotionTrig', None]
         push_speed = res['speed', None]
         if push_speed is None:
             push_speed = inst.fixup['$speed']
@@ -272,6 +321,7 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
                 targetname=conditions.local_name(inst, 'enable_motion_trig'),
                 origin=mark1.pos,
                 filtername=motion_filter,
+                spawnflags=8,
                 startDisabled=1,
                 wait=0.1,
             )
