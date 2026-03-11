@@ -127,8 +127,10 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
         if no_conn:
             inst.fixup['$speed'] = 0
 
-        size_vec = abs((mark1.pos + (Vec(64, 0, 0) @ mark1.orient)) - (mark2.pos + (Vec(64, 0, 0) @ mark2.orient)))
-        size: int = int((size_vec.x + size_vec.y + size_vec.z) / 128)
+        size: int = round((
+            (mark1.pos + mark1.orient.forward(64)) -
+            (mark2.pos + mark2.orient.forward(64))
+        ).mag() / 128)
         #LOGGER.info("Belt Size: " + str(size))
 
         inst.fixup['$size'] = size
