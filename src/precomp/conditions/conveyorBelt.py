@@ -188,16 +188,17 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
                     origin= marks_mid_pos, #spawn these at the same spot so they have the same lighting
                     angles=orient,
                 )
-                #seg_inst.fixup.update(inst.fixup)
+                seg_inst.fixup.update(inst.fixup)
 
         for index, pos in enumerate(mark1.pos.iter_line(mark2.pos, stride=128), start=1):
-            conditions.add_inst(
+            track_inst = conditions.add_inst(
                 vmf,
                 targetname=mark1.name + f'-track{index}',
                 file=track_inst_file,
                 origin=pos,
                 angles=mark1.orient,
             )
+            track_inst.fixup.update(inst.fixup)
 
         # Add the EnableMotion trigger_multiple seen in platform items.
         # This wakes up cubes when it starts moving.
