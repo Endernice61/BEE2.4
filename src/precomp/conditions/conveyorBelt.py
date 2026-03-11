@@ -9,6 +9,7 @@ import srctools.logger
 from precomp import instanceLocs, template_brush, conditions
 from precomp.connections import ITEMS, Item
 import consts
+import user_errors
 
 COND_MOD_NAME: str | None = None
 LOGGER = srctools.logger.get_logger(__name__, alias='cond.conveyorBelt')
@@ -136,15 +137,26 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
         inst.fixup['$size'] = size
 
         # Check if axis, facing, and up vector match
-        marks_dist_between: Vec = mark1.pos - mark2.pos
+        marks_dist_between: Vec = mark2.pos - mark1.pos
         marks_vec_between: Vec = marks_dist_between.norm()
-        marks_mid_pos: Vec = mark1.pos + (mark1.orient.forward() * -(marks_dist_between.mag()/2))
-        if marks_dist_between.mag() > 1 and not Vec.dot(mark1.orient.forward(), marks_vec_between) > 0.9999:
-            raise ValueError(f'Conveyor Belts are not in line {mark1.pos} {mark2.pos} {marks_vec_between.len()}')
+        error = ''
+        if marks_dist_between.mag() > 1 and not Vec.dot(mark1.orient.forward(), marks_vec_between) < -0.9999:
+            error = 'Conveyor Belts are not in line: {} @ {} -> {} @ {}',
         if not Vec.dot(mark1.orient.forward(), mark2.orient.forward()) < -0.9999:
-            raise ValueError(f'Conveyor Belts are not facing eachother {mark1.orient.forward()} {mark2.orient.forward()}')
+            error = 'Conveyor Belts are not facing eachother: {} @ {} -> {} @ {}'
         if not Vec.dot(mark1.orient.up(), mark2.orient.up()) > 0.9999:
-            raise ValueError(f'Conveyor Belts do not share the same rotation {mark1.orient.up()} {mark2.orient.up()}')
+            error = 'Conveyor Belts do not share the same rotation: {} @ {} -> {} @ {}'
+        if error:
+            # Document the exact condition in the logs, but just use the same error for users -
+            # explaining how we caught it is more complex to explain, and it's pretty obvious
+            # how they're not lined up.
+            LOGGER.error(
+                error,
+                mark1.pos, mark1.orient.to_angle(),
+                mark2.pos, mark2.orient.to_angle(),
+            )
+            raise user_errors.UserError(user_errors.TOK_CONVEYOR_NOT_LINED_UP, points=[mark1.pos, mark2.pos])
+        del error
 
         end_inst_file = instanceLocs.resolve_one(res['EndInst', ''], error=False)
         segment_inst_file = instanceLocs.resolve_one(res['SegmentInst', ''], error=False)

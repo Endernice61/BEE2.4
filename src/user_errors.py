@@ -270,6 +270,11 @@ TOK_CONNECTIONS_UNKNOWN_INSTANCE = TransToken.ui(
     'exported, you will need to restart Portal 2. Otherwise check the relevant package.'
 )
 
+TOK_CONVEYOR_NOT_LINED_UP = TransToken.ui(
+    'The specified conveyor belts are not lined up with each other. '
+    "Make sure they're lined up, facing each other, be in line, and have matching orientations."
+)
+
 TOK_CORRIDOR_EMPTY_GROUP = TransToken.ui(
     'No corridors were defined for the <var>{orient}_{mode}_{dir}</var> group. Try moving '
     'this door back onto a wall.'
