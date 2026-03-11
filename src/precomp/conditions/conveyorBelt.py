@@ -6,7 +6,8 @@ import attrs
 from srctools import Keyvalues, Vec, Entity, Output, VMF, Matrix
 
 import srctools.logger
-from precomp import instanceLocs, template_brush, conditions
+
+from precomp import instanceLocs, template_brush, conditions, brushLoc
 from precomp.connections import ITEMS, Item
 import consts
 import user_errors
@@ -163,20 +164,59 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
         track_inst_file = instanceLocs.resolve_one(res['TrackInst', ''], error=False)
     
         conditions.add_inst(
-                vmf,
-                targetname=mark1.name,
-                file=end_inst_file,
-                origin=mark1.pos,
-                angles=mark1.orient,
-            )
+            vmf,
+            targetname=mark1.name,
+            file=end_inst_file,
+            origin=mark1.pos,
+            angles=mark1.orient,
+        )
         
         conditions.add_inst(
-                vmf,
-                targetname=mark1.name,
-                file=end_inst_file,
-                origin=mark2.pos,
-                angles=mark2.orient,
+            vmf,
+            targetname=mark1.name,
+            file=end_inst_file,
+            origin=mark2.pos,
+            angles=mark2.orient,
+        )
+
+        # Iterate positions, looking for the best place for lighting, and checking validity.
+        # All the belts are placed at the same place, so they get uniform lighting
+        marks_voxel_side = mark1.orient.left(128)
+        marks_voxel_up = mark1.orient.up(128)
+        # If we find obstructions, store to show all of them in the error..
+        invalid_pos = []
+        # First is our obstruction score, then store the distance to the midpoint, in case of ties.
+        # Last is the actual position to use.
+        potential_lighting_pos: list[tuple[float, float, Vec]] = []
+        # If we don't have any good positions, pick the midpoint.
+        lighting_pos = (mark1.pos + mark2.pos) / 2
+        for pos in mark1.pos.iter_line(mark2.pos, stride=128):
+            if brushLoc.POS.lookup_world(pos).is_solid:
+                invalid_pos.append(pos)
+                continue
+            score = 0
+            if not brushLoc.POS.lookup_world(pos + marks_voxel_up).is_solid:
+                score += 6  # If the top is visible, always prefer that.
+            if not brushLoc.POS.lookup_world(pos + marks_voxel_side).is_solid:
+                score += 2  # Sides are equally valuable.
+            if not brushLoc.POS.lookup_world(pos - marks_voxel_side).is_solid:
+                score += 2
+            if not brushLoc.POS.lookup_world(pos - marks_voxel_up).is_solid:
+                score += 1  # Below being exposed is better than nothing, but not very important.
+            potential_lighting_pos.append((score, -(pos - lighting_pos).len_sq(), pos))
+        if invalid_pos:
+            raise user_errors.UserError(
+                user_errors.TOK_CONVEYOR_OBSTRUCTED,
+                points=[mark1.pos, mark2.pos],
+                voxels=invalid_pos,
             )
+        if potential_lighting_pos:
+            LOGGER.debug(
+                'Conveyor {} -> {} lighting: {}',
+                mark1.pos, mark2.pos, potential_lighting_pos,
+            )
+            # Pick the one with the highest score.
+            lighting_pos = max(potential_lighting_pos)[2]
 
         offset = 256
         track_name = conditions.local_name(inst, 'segment{}')
@@ -199,7 +239,7 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
                     vmf,
                     targetname=track_name.format(index),
                     file=segment_inst_file,
-                    origin= marks_mid_pos, #spawn these at the same spot so they have the same lighting
+                    origin=lighting_pos,
                     angles=orient,
                 )
                 seg_inst.fixup.update(inst.fixup)
@@ -477,4 +517,3 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
         pfizz.solids.append(base_trig.copy())
         for face in pfizz.sides():
             face.mat = consts.Tools.TRIGGER
-
