@@ -45,10 +45,15 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
         * `Speed`: The fixup or number for the belt speed.
         * `MotionTrig`: If set, a trigger_multiple will be spawned that
           `EnableMotion`s weighted cubes. The value is the name of the relevant filter.
+        * `EndOutput`: Adds an output to the last track. The value is the same as
+          outputs in VMFs.
         * `BeamKeys`: If set, a list of keyvalues to use to generate an env_beam
           travelling from start to end. The origin is treated specially - X is
           the distance from walls, y is the distance to the side, and z is the
           height.
+        * `PaintFizzler`: If set, add a paint fizzler underneath the belt.
+        * `RemovePaint`: If set, adds an output to the end triggers to remove the
+          paint from segments as they pass.
 
     * Old Options:
         * `SegmentInst`: Generated at each square. (`track` is the name of the
@@ -124,7 +129,7 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
             conn.to_item = mark1.item
         
         conn_count = len(mark1.item.inputs)
-        no_conn = conn_count == 0 and not bool(int(inst.fixup['$start_enabled']))
+        no_conn = conn_count == 0 and not inst.fixup.bool('$start_enabled')
 
         if no_conn:
             inst.fixup['$speed'] = 0
@@ -303,12 +308,23 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
                 end_trig_start.add_out(output)
                 end_trig_end.add_out(output)
 
+            remove_paint = res['RemovePaint', None]
+            if remove_paint is None:
+                remove_paint = inst.fixup.bool('$disable_autorespawn', False)
+            else:
+                remove_paint = res.bool('RemovePaint')
+                
+            if remove_paint:
+                remove_paint_output = Output('OnTrigger', '!activator', 'RemovePaint')
+                end_trig_start.add_out(remove_paint_output)
+                end_trig_end.add_out(remove_paint_output)
+
         # Add the EnableMotion trigger_multiple seen in platform items.
         # This wakes up cubes when it starts moving.
         motion_filter = res['MotionTrig', None]
         push_speed = res['speed', None]
         if push_speed is None:
-            push_speed = inst.fixup['$speed']
+            push_speed = inst.fixup.float('$speed')
 
         # Disable on walls, or if the conveyor can't be turned on.
         if norm != (0, 0, 1) or no_conn:
@@ -369,6 +385,38 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
                 face.mat = consts.Tools.TRIGGER
 
         mark2.ent.remove()
+
+        LOGGER.debug(
+            f"""
+            Options:
+            - New: {res['New', '']}
+            - EndInst: {res['EndInst', '']}
+            - SegmentInst: {res['SegmentInst', '']}
+            - TrackInst: {res['TrackInst', '']}
+            - Speed: {res['Speed', '']}
+            - MotionTrig: {res['MotionTrig', '']}
+            - EndOutput: {res['EndOutput', '']}
+            - BeamKeys: {res['BeamKeys', '']}
+            - PaintFizzler: {res['PaintFizzler', '']}
+            - RemovePaint: {res['RemovePaint', '']}
+
+            Instvars:
+            - Type: {inst.fixup['$cube_type']} 
+            - Start enabled: {inst.fixup['$start_enabled']} 
+            - Start reversed: {inst.fixup['$start_reversed']} 
+            - Start active: {inst.fixup['$start_active']} 
+            - Auto-respawn: {inst.fixup['$disable_autorespawn']}
+
+            - Connection Count: {conn_count}
+            - Size: {inst.fixup['$size']}
+            - Speed {inst.fixup['$speed']}
+
+            - Sound Move: {inst.fixup['$sound_move']}
+            - Sound Start: {inst.fixup['$sound_start']}
+            - Sound Reverse: {inst.fixup['$sound_reverse']}
+            - Sound Stop: {inst.fixup['$sound_stop']}
+            """
+        )
             
         # END OF NEW CONVEYOR BELTS
         #--------------------------
