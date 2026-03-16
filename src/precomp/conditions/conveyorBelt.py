@@ -141,6 +141,7 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
         #LOGGER.info("Belt Size: " + str(size))
 
         inst.fixup['$size'] = size
+        inst.fixup['$angle_fixup'] = Matrix.from_angstr(inst['angles']).transpose().to_angle()
 
         # Check if axis, facing, and up vector match
         marks_dist_between: Vec = mark2.pos - mark1.pos
