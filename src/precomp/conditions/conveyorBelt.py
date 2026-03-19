@@ -384,6 +384,32 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
             pfizz.solids.append(base_trig.copy())
             for face in pfizz.sides():
                 face.mat = consts.Tools.TRIGGER
+        
+            # Generate an env_beam pointing from the start to the end of the track.
+        try:
+            beam_keys = res.find_key('BeamKeys')
+        except LookupError:
+            pass
+        else:
+            beam = vmf.create_ent(classname='env_beam')
+
+            beam_off = beam_keys.vec('origin', 0, 63, 56)
+
+            for prop in beam_keys:
+                beam[prop.real_name] = prop.value
+
+            # Localise the targetname so it can be triggered..
+            beam['LightningStart'] = beam['targetname'] = conditions.local_name(
+                inst,
+                beam['targetname', 'beam']
+            )
+            del beam['LightningEnd']
+            beam['origin'] = mark1.pos + Vec(
+                beam_off.x, beam_off.y, beam_off.z,
+            ) @ mark1.orient
+            beam['TargetPoint'] = mark2.pos + Vec(
+                beam_off.x, beam_off.y, beam_off.z,
+            ) @ mark2.orient
 
         mark2.ent.remove()
 
