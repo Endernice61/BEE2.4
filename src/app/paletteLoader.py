@@ -182,7 +182,6 @@ DEFAULT_PALETTES: dict[str, BuiltinPal] = {
     ],
 
     'APTAG': [
-        [],  # Original has 4 paint fizzler items at the top.
         [
             (DefaultItems.button_pedestal, 0),
             (DefaultItems.button_floor, 0),
