@@ -9,6 +9,7 @@ import srctools.logger
 
 from precomp import instanceLocs, template_brush, conditions, brushLoc
 from precomp.connections import ITEMS, Item
+from precomp.lazy_value import LazyValue
 import consts
 import user_errors
 
@@ -51,6 +52,7 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
           travelling from start to end. The origin is treated specially - X is
           the distance from walls, y is the distance to the side, and z is the
           height.
+        * `NoPortal`: If set, add a no portal volume across the belt
         * `PaintFizzler`: If set, add a paint fizzler underneath the belt.
         * `RemovePaint`: If set, adds an output to the end triggers to remove the
           paint from segments as they pass.
@@ -168,6 +170,11 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
         end_inst_file = instanceLocs.resolve_one(res['EndInst', ''], error=False)
         segment_inst_file = instanceLocs.resolve_one(res['SegmentInst', ''], error=False)
         track_inst_file = instanceLocs.resolve_one(res['TrackInst', ''], error=False)
+
+        speed_var = LazyValue.parse(res['Speed', '']).as_float()
+        noportal_var = LazyValue.parse(res['NoPortal', '']).as_bool()
+        removepaint_var = LazyValue.parse(res['RemovePaint', '']).as_bool()
+        paintfizzler_var = LazyValue.parse(res['PaintFizzler', '']).as_bool()
     
         conditions.add_inst(
             vmf,
@@ -231,11 +238,8 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
 
         norm = mark1.orient.up()
 
-        if res.bool('rotateSegments', True):
-            orient = Matrix.from_basis(x=mark1.orient.forward(), z=norm)
-            inst['angles'] = orient.to_angle()
-        else:
-            orient = mark1.orient
+        # I don't know why we're rotating the instance but I didn't notice it earlier and its too late to change now.
+        inst['angles'] = Matrix.from_basis(x=mark1.orient.forward(), z=norm).to_angle()
 
         for index, pos in enumerate(track_start.iter_line(track_end, stride=128), start=1):
             # Don't place at the last point - it doesn't teleport correctly,
@@ -246,7 +250,7 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
                     targetname=track_name.format(index),
                     file=segment_inst_file,
                     origin=lighting_pos,
-                    angles=orient,
+                    angles=mark1.orient,
                 )
                 seg_inst.fixup.update(inst.fixup)
 
@@ -308,14 +312,8 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
                 output.target = conditions.local_name(inst, output.target)
                 end_trig_start.add_out(output)
                 end_trig_end.add_out(output)
-
-            remove_paint = res['RemovePaint', None]
-            if remove_paint is None:
-                remove_paint = inst.fixup.bool('$disable_autorespawn', False)
-            else:
-                remove_paint = res.bool('RemovePaint')
                 
-            if remove_paint:
+            if removepaint_var(inst):
                 remove_paint_output = Output('OnTrigger', '!activator', 'RemovePaint')
                 end_trig_start.add_out(remove_paint_output)
                 end_trig_end.add_out(remove_paint_output)
@@ -323,14 +321,10 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
         # Add the EnableMotion trigger_multiple seen in platform items.
         # This wakes up cubes when it starts moving.
         motion_filter = res['MotionTrig', None]
-        push_speed = res['speed', None]
-        if push_speed is None:
-            push_speed = inst.fixup.float('$speed')
 
         # Disable on walls, or if the conveyor can't be turned on.
         if norm != (0, 0, 1) or no_conn:
             motion_filter = None
-            push_speed = None
         
         if motion_filter is not None:
             motion_trig = vmf.create_ent(
@@ -345,38 +339,50 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
             motion_trig.add_out(Output('OnStartTouch', '!activator', 'ExitDisabledState'))
             # Match the size of the original...
             motion_trig.solids.append(vmf.make_prism(
-                mark1.pos + Vec(72, -56, 58) @ orient,
-                mark2.pos + Vec(-72, 56, 144) @ orient,
+                mark1.pos + Vec(72, -56, 58) @ mark1.orient,
+                mark2.pos + Vec(72, -56, 144) @ mark2.orient,
                 mat=consts.Tools.TRIGGER,
             ).solid)
 
-        if push_speed is not None:
+        if speed_var(inst) > 0:
             push_trig = vmf.create_ent(
                 classname='trigger_push',
                 targetname=conditions.local_name(inst, 'push'),
                 spawnflags=4097,
                 origin=mark1.pos,
                 startDisabled=1,
-                speed=int(push_speed)*128,
+                speed=speed_var(inst)*128,
                 wait=0.1,
             )
             push_trig.solids.append(vmf.make_prism(
-                mark1.pos + Vec(64, -60, 59) @ orient,
-                mark2.pos + Vec(-64, 60, 60) @ orient,
+                mark1.pos + Vec(64, -60, 59) @ mark1.orient,
+                mark2.pos + Vec(64, -60, 60) @ mark2.orient,
                 mat=consts.Tools.TRIGGER,
             ).solid)
 
         # A brush covering under the platform.
         base_trig = vmf.make_prism(
-            mark1.pos + Vec(64, 60, 50) @ orient,
-            mark2.pos + Vec(-64, -60, 58) @ orient,
+            mark1.pos + Vec(64, 60, 50) @ mark1.orient,
+            mark2.pos + Vec(64, 60, 58) @ mark2.orient,
             mat=consts.Tools.INVISIBLE,
         ).solid
 
         vmf.add_brush(base_trig)
 
+        if noportal_var(inst):
+            # Block portals on the segments..
+            volume_noportal = vmf.create_ent(
+                classname='func_noportal_volume',
+                origin=mark1.pos,
+            )
+            volume_noportal.solids.append(vmf.make_prism(
+                mark1.pos + Vec(64, -60, 56) @ mark1.orient,
+                mark2.pos + Vec(64, -60, 60) @ mark2.orient,
+                mat=consts.Tools.INVISIBLE,
+            ).solid)
+
         # Make a paint_cleanser under the belt..
-        if res.bool('PaintFizzler'):
+        if paintfizzler_var(inst):
             pfizz = vmf.create_ent(
                 classname='trigger_paint_cleanser',
                 origin=mark1.pos,
@@ -413,38 +419,6 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
 
         mark2.ent.remove()
 
-        LOGGER.debug(
-            f"""
-            Options:
-            - New: {res['New', '']}
-            - EndInst: {res['EndInst', '']}
-            - SegmentInst: {res['SegmentInst', '']}
-            - TrackInst: {res['TrackInst', '']}
-            - Speed: {res['Speed', '']}
-            - MotionTrig: {res['MotionTrig', '']}
-            - EndOutput: {res['EndOutput', '']}
-            - BeamKeys: {res['BeamKeys', '']}
-            - PaintFizzler: {res['PaintFizzler', '']}
-            - RemovePaint: {res['RemovePaint', '']}
-
-            Instvars:
-            - Type: {inst.fixup['$cube_type']} 
-            - Start enabled: {inst.fixup['$start_enabled']} 
-            - Start reversed: {inst.fixup['$start_reversed']} 
-            - Start active: {inst.fixup['$start_active']} 
-            - Auto-respawn: {inst.fixup['$disable_autorespawn']}
-
-            - Connection Count: {conn_count}
-            - Size: {inst.fixup['$size']}
-            - Speed {inst.fixup['$speed']}
-
-            - Sound Move: {inst.fixup['$sound_move']}
-            - Sound Start: {inst.fixup['$sound_start']}
-            - Sound Reverse: {inst.fixup['$sound_reverse']}
-            - Sound Stop: {inst.fixup['$sound_stop']}
-            """
-        )
-            
         # END OF NEW CONVEYOR BELTS
         #--------------------------
         return
