@@ -2,22 +2,62 @@
 """
 from __future__ import annotations
 
+import attrs
 from srctools import Keyvalues, Vec, Entity, Output, VMF, Matrix
 
 import srctools.logger
-from precomp import instanceLocs, template_brush, conditions
-import consts
 
+from precomp import instanceLocs, template_brush, conditions, brushLoc
+from precomp.connections import ITEMS, Item
+from precomp.lazy_value import LazyValue
+import consts
+import user_errors
 
 COND_MOD_NAME: str | None = None
 LOGGER = srctools.logger.get_logger(__name__, alias='cond.conveyorBelt')
+
+@attrs.define
+class Marker:
+    """A single node point."""
+    ent: Entity = attrs.field(on_setattr=attrs.setters.frozen)
+    name: str
+    file: str
+    pos: Vec
+    item: Item
+    orient: Matrix = attrs.field(init=False, on_setattr=attrs.setters.frozen)
+
+    # noinspection PyUnresolvedReferences
+    @orient.default # type: ignore
+    def _init_orient(self) -> Matrix:
+        """We need to rotate the orient, because items have forward as negative X."""
+        rot = Matrix.from_angstr(self.ent['angles'])
+        return Matrix.from_yaw(180) @ rot
 
 
 @conditions.make_result('ConveyorBelt')
 def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
     """Create a conveyor belt.
-
     * Options:
+        * `New`: Are we generating a new conveyor belt type?
+        * `EndInst`: Instance for the end of the conveyor belts.
+          Added in precomp so instance names are the same.
+        * `SegmentInst`: The instance for the conveyor belt segments.
+        * `TrackInst`: The track the segments ride on.
+        * `Speed`: The fixup or number for the belt speed.
+        * `MotionTrig`: If set, a trigger_multiple will be spawned that
+          `EnableMotion`s weighted cubes. The value is the name of the relevant filter.
+        * `EndOutput`: Adds an output to the last track. The value is the same as
+          outputs in VMFs.
+        * `BeamKeys`: If set, a list of keyvalues to use to generate an env_beam
+          travelling from start to end. The origin is treated specially - X is
+          the distance from walls, y is the distance to the side, and z is the
+          height.
+        * `NoPortal`: If set, add a no portal volume across the belt
+        * `PaintFizzler`: If set, add a paint fizzler underneath the belt.
+        * `RemovePaint`: If set, adds an output to the end triggers to remove the
+          paint from segments as they pass.
+
+    * Old Options:
         * `SegmentInst`: Generated at each square. (`track` is the name of the
           path to attach to.)
         * `TrackTeleport`: Set the track points so they teleport trains to the start.
@@ -37,7 +77,354 @@ def res_conveyor_belt(vmf: VMF, inst: Entity, res: Keyvalues) -> None:
         * `NoPortalFloor`: If set, add a `func_noportal_volume` on the floor
           under the track.
         * `PaintFizzler`: If set, add a paint fizzler underneath the belt.
+
     """
+    new_conveyor: bool = res.bool('New', False)
+
+    if new_conveyor:
+        # Generate our new conveyor instead
+
+        mark1 = Marker(
+            inst,
+            inst["targetname"],
+            inst["file"],
+            inst.get_origin(),
+            ITEMS[inst["targetname"]],
+            )
+
+        if not mark1.item.outputs:
+            # Item has no outputs and is probably an end\
+            #LOGGER.info("Conveyor Belt " + inst_name + " has no outputs")
+            return
+
+        LOGGER.info("Generating Conveyor Belt " + mark1.name)
+
+        mark2: Marker | None = None
+
+        for output in list(mark1.item.outputs)[:]:
+            conn_item = output.to_item
+            conn_inst = conn_item.inst
+            if conn_inst['file'].casefold() == mark1.file:
+                if mark2 is not None:
+                    raise ValueError(f'Conveyor belt {mark1.name} has two connections!')
+                mark2 = Marker(
+                    conn_inst,
+                    conn_inst["targetname"],
+                    conn_inst["file"],
+                    conn_inst.get_origin(),
+                    conn_item,
+                    )
+                for conn_output in mark2.item.outputs:
+                    if conn_output.to_item.name == mark1.item.name:
+                        raise ValueError('Cyclical Conveyor Belt connection (ends are connected to eachother)!')
+                output.remove()
+            else:
+                raise ValueError(f'Conveyor Belt {mark1.name} connected to non-conveyor belt!')
+
+        if mark2 is None:
+            LOGGER.info(f"Conveyor belt {mark1} has no end instance")
+            return
+
+        mark1.item.delete_antlines()
+
+        for conn in list(mark2.item.inputs)[:]:
+            conn.to_item = mark1.item
+        
+        conn_count = len(mark1.item.inputs)
+        no_conn = conn_count == 0 and not inst.fixup.bool('$start_enabled')
+
+        if no_conn:
+            inst.fixup['$speed'] = 0
+
+        size: int = round((
+            (mark1.pos + mark1.orient.forward(64)) -
+            (mark2.pos + mark2.orient.forward(64))
+        ).mag() / 128)
+        #LOGGER.info("Belt Size: " + str(size))
+
+        inst.fixup['$size'] = size
+        inst.fixup['$angle_fixup'] = Matrix.from_angstr(inst['angles']).transpose().to_angle()
+
+        # Check if axis, facing, and up vector match
+        marks_dist_between: Vec = mark2.pos - mark1.pos
+        marks_vec_between: Vec = marks_dist_between.norm()
+        error = ''
+        if marks_dist_between.mag() > 1 and not Vec.dot(mark1.orient.forward(), marks_vec_between) < -0.9999:
+            error = 'Conveyor Belts are not in line: {} @ {} -> {} @ {}',
+        if not Vec.dot(mark1.orient.forward(), mark2.orient.forward()) < -0.9999:
+            error = 'Conveyor Belts are not facing eachother: {} @ {} -> {} @ {}'
+        if not Vec.dot(mark1.orient.up(), mark2.orient.up()) > 0.9999:
+            error = 'Conveyor Belts do not share the same rotation: {} @ {} -> {} @ {}'
+        if error:
+            # Document the exact condition in the logs, but just use the same error for users -
+            # explaining how we caught it is more complex to explain, and it's pretty obvious
+            # how they're not lined up.
+            LOGGER.error(
+                error,
+                mark1.pos, mark1.orient.to_angle(),
+                mark2.pos, mark2.orient.to_angle(),
+            )
+            raise user_errors.UserError(user_errors.TOK_CONVEYOR_NOT_LINED_UP, points=[mark1.pos, mark2.pos])
+        del error
+
+        end_inst_file = instanceLocs.resolve_one(res['EndInst', ''], error=False)
+        segment_inst_file = instanceLocs.resolve_one(res['SegmentInst', ''], error=False)
+        track_inst_file = instanceLocs.resolve_one(res['TrackInst', ''], error=False)
+
+        speed_var = LazyValue.parse(res['Speed', '']).as_float()
+        noportal_var = LazyValue.parse(res['NoPortal', '']).as_bool()
+        removepaint_var = LazyValue.parse(res['RemovePaint', '']).as_bool()
+        paintfizzler_var = LazyValue.parse(res['PaintFizzler', '']).as_bool()
+    
+        conditions.add_inst(
+            vmf,
+            targetname=mark1.name,
+            file=end_inst_file,
+            origin=mark1.pos,
+            angles=mark1.orient,
+        )
+        
+        conditions.add_inst(
+            vmf,
+            targetname=mark1.name,
+            file=end_inst_file,
+            origin=mark2.pos,
+            angles=mark2.orient,
+        )
+
+        # Iterate positions, looking for the best place for lighting, and checking validity.
+        # All the belts are placed at the same place, so they get uniform lighting
+        marks_voxel_side = mark1.orient.left(128)
+        marks_voxel_up = mark1.orient.up(128)
+        # If we find obstructions, store to show all of them in the error..
+        invalid_pos = []
+        # First is our obstruction score, then store the distance to the midpoint, in case of ties.
+        # Last is the actual position to use.
+        potential_lighting_pos: list[tuple[float, float, Vec]] = []
+        # If we don't have any good positions, pick the midpoint.
+        lighting_pos = (mark1.pos + mark2.pos) / 2
+        for pos in mark1.pos.iter_line(mark2.pos, stride=128):
+            if brushLoc.POS.lookup_world(pos).is_solid:
+                invalid_pos.append(pos)
+                continue
+            score = 0
+            if not brushLoc.POS.lookup_world(pos + marks_voxel_up).is_solid:
+                score += 6  # If the top is visible, always prefer that.
+            if not brushLoc.POS.lookup_world(pos + marks_voxel_side).is_solid:
+                score += 2  # Sides are equally valuable.
+            if not brushLoc.POS.lookup_world(pos - marks_voxel_side).is_solid:
+                score += 2
+            if not brushLoc.POS.lookup_world(pos - marks_voxel_up).is_solid:
+                score += 1  # Below being exposed is better than nothing, but not very important.
+            potential_lighting_pos.append((score, -(pos - lighting_pos).len_sq(), pos))
+        if invalid_pos:
+            raise user_errors.UserError(
+                user_errors.TOK_CONVEYOR_OBSTRUCTED, # type: ignore
+                points=[mark1.pos, mark2.pos],
+                voxels=invalid_pos,
+            )
+        if potential_lighting_pos:
+            LOGGER.debug(
+                'Conveyor {} -> {} lighting: {}',
+                mark1.pos, mark2.pos, potential_lighting_pos,
+            )
+            # Pick the one with the highest score.
+            lighting_pos = max(potential_lighting_pos)[2]
+
+        offset = 256
+        track_name = conditions.local_name(inst, 'segment{}')
+        track_start: Vec = mark1.pos + (Vec(offset, 0, 32) @  mark1.orient)
+        track_end: Vec = mark2.pos + (Vec(offset, 0, 32) @ mark2.orient)
+
+        norm = mark1.orient.up()
+
+        # I don't know why we're rotating the instance but I didn't notice it earlier and its too late to change now.
+        inst['angles'] = Matrix.from_basis(x=mark1.orient.forward(), z=norm).to_angle()
+
+        for index, pos in enumerate(track_start.iter_line(track_end, stride=128), start=1):
+            # Don't place at the last point - it doesn't teleport correctly,
+            # and would be one too many.
+            if segment_inst_file and pos != track_end:
+                seg_inst = conditions.add_inst(
+                    vmf,
+                    targetname=track_name.format(index),
+                    file=segment_inst_file,
+                    origin=lighting_pos,
+                    angles=mark1.orient,
+                )
+                seg_inst.fixup.update(inst.fixup)
+
+        for index, pos in enumerate(mark1.pos.iter_line(mark2.pos, stride=128), start=1):
+            track_inst = conditions.add_inst(
+                vmf,
+                targetname=conditions.local_name(inst, f'track{index}'),
+                file=track_inst_file,
+                origin=pos,
+                angles=mark1.orient,
+            )
+            track_inst.fixup.update(inst.fixup)
+
+        end_filter = vmf.create_ent(
+            classname='filter_activator_name',
+            targetname=conditions.local_name(inst, 'filter_segment'),
+            filtername=conditions.local_name(inst, 'segment*'),
+            origin=mark1.pos,
+        )
+
+        if end_filter is not None:
+            end_trig_start = vmf.create_ent(
+                classname='trigger_multiple',
+                targetname=conditions.local_name(inst, 'end_trig_start'),
+                origin=mark1.pos,
+                filtername=end_filter['targetname'],
+                spawnflags=64,
+                startDisabled=1,
+                wait=0.1,
+            )
+
+            end_trig_start.solids.append(vmf.make_prism(
+                mark1.pos + Vec(296, -60, -60) @ mark1.orient,
+                mark1.pos + Vec(312, 60, 60) @ mark1.orient,
+                mat=consts.Tools.TRIGGER,
+            ).solid)
+
+            end_trig_end = vmf.create_ent(
+                classname='trigger_multiple',
+                targetname=conditions.local_name(inst, 'end_trig_end'),
+                origin=mark2.pos,
+                filtername=end_filter['targetname'],
+                spawnflags=64,
+                startDisabled=1,
+                wait=0.1,
+            )
+
+            end_trig_end.solids.append(vmf.make_prism(
+                mark2.pos + Vec(296, -60, -60) @ mark2.orient,
+                mark2.pos + Vec(312, 60, 60) @ mark2.orient,
+                mat=consts.Tools.TRIGGER,
+            ).solid)
+
+            for prop in res.find_all('EndOutput'):
+                output = Output.parse(prop)
+                output.output = 'OnTrigger'
+                output.inst_out = None
+                output.comma_sep = False
+                output.target = conditions.local_name(inst, output.target)
+                end_trig_start.add_out(output)
+                end_trig_end.add_out(output)
+                
+            if removepaint_var(inst):
+                remove_paint_output = Output('OnTrigger', '!activator', 'RemovePaint')
+                end_trig_start.add_out(remove_paint_output)
+                end_trig_end.add_out(remove_paint_output)
+
+        # Add the EnableMotion trigger_multiple seen in platform items.
+        # This wakes up cubes when it starts moving.
+        motion_filter = res['MotionTrig', None]
+
+        # Disable on walls, or if the conveyor can't be turned on.
+        if norm != (0, 0, 1) or no_conn:
+            motion_filter = None
+        
+        if motion_filter is not None:
+            motion_trig = vmf.create_ent(
+                classname='trigger_multiple',
+                targetname=conditions.local_name(inst, 'enable_motion_trig'),
+                origin=mark1.pos,
+                filtername=motion_filter,
+                spawnflags=8,
+                startDisabled=1,
+                wait=0.1,
+            )
+            motion_trig.add_out(Output('OnStartTouch', '!activator', 'ExitDisabledState'))
+            # Match the size of the original...
+            motion_trig.solids.append(vmf.make_prism(
+                mark1.pos + Vec(72, -56, 58) @ mark1.orient,
+                mark2.pos + Vec(72, -56, 144) @ mark2.orient,
+                mat=consts.Tools.TRIGGER,
+            ).solid)
+
+        if speed_var(inst) > 0:
+            push_trig = vmf.create_ent(
+                classname='trigger_push',
+                targetname=conditions.local_name(inst, 'push'),
+                spawnflags=4097,
+                origin=mark1.pos,
+                startDisabled=1,
+                speed=speed_var(inst)*128,
+                wait=0.1,
+            )
+            push_trig.solids.append(vmf.make_prism(
+                mark1.pos + Vec(64, -60, 59) @ mark1.orient,
+                mark2.pos + Vec(64, -60, 60) @ mark2.orient,
+                mat=consts.Tools.TRIGGER,
+            ).solid)
+
+        # A brush covering under the platform.
+        base_trig = vmf.make_prism(
+            mark1.pos + Vec(64, 60, 50) @ mark1.orient,
+            mark2.pos + Vec(64, 60, 58) @ mark2.orient,
+            mat=consts.Tools.INVISIBLE,
+        ).solid
+
+        vmf.add_brush(base_trig)
+
+        if noportal_var(inst):
+            # Block portals on the segments..
+            volume_noportal = vmf.create_ent(
+                classname='func_noportal_volume',
+                origin=mark1.pos,
+            )
+            volume_noportal.solids.append(vmf.make_prism(
+                mark1.pos + Vec(64, -60, 56) @ mark1.orient,
+                mark2.pos + Vec(64, -60, 60) @ mark2.orient,
+                mat=consts.Tools.INVISIBLE,
+            ).solid)
+
+        # Make a paint_cleanser under the belt..
+        if paintfizzler_var(inst):
+            pfizz = vmf.create_ent(
+                classname='trigger_paint_cleanser',
+                origin=mark1.pos,
+            )
+            pfizz.solids.append(base_trig.copy())
+            for face in pfizz.sides():
+                face.mat = consts.Tools.TRIGGER
+        
+            # Generate an env_beam pointing from the start to the end of the track.
+        try:
+            beam_keys = res.find_key('BeamKeys')
+        except LookupError:
+            pass
+        else:
+            beam = vmf.create_ent(classname='env_beam')
+
+            beam_off = beam_keys.vec('origin', 0, 63, 56)
+
+            for prop in beam_keys:
+                beam[prop.real_name] = prop.value
+
+            # Localise the targetname so it can be triggered..
+            beam['LightningStart'] = beam['targetname'] = conditions.local_name(
+                inst,
+                beam['targetname', 'beam']
+            )
+            del beam['LightningEnd']
+            beam['origin'] = mark1.pos + Vec(
+                beam_off.x, beam_off.y, beam_off.z,
+            ) @ mark1.orient
+            beam['TargetPoint'] = mark2.pos + Vec(
+                beam_off.x, beam_off.y, beam_off.z,
+            ) @ mark2.orient
+
+        mark2.ent.remove()
+
+        # END OF NEW CONVEYOR BELTS
+        #--------------------------
+        return
+    
+    LOGGER.info("Generating old Conveyor Belt: " + inst['targetname'].casefold())
+
     move_dist = inst.fixup.int('$travel_distance')
 
     if move_dist <= 256:
