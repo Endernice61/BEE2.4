@@ -1,6 +1,7 @@
 """Logic for trigger items, allowing them to be resized."""
 from __future__ import annotations
 
+from collections.abc import Sequence
 from contextlib import suppress
 import copy
 
@@ -24,6 +25,7 @@ class Brush:
     keys: Keyvalues
     local_keys: Keyvalues
     coop_playerteam: bool
+    outputs: Sequence[Output]
 
     @classmethod
     def parse(cls, kv: Keyvalues) -> Brush:
@@ -33,6 +35,7 @@ class Brush:
             keys=kv.find_block('keys', or_blank=True),
             local_keys=kv.find_block('localkeys', or_blank=True),
             coop_playerteam=kv.bool('coop_playerteam', True),
+            outputs=[Output.parse(child) for child in kv.find_children('Outputs')],
         )
 
 
@@ -70,6 +73,7 @@ def res_resizeable_trigger(vmf: VMF, info: conditions.MapInfo, res: Keyvalues) -
            if coopVar is enabled.
         * `localkeys`: The same as above, except values will be changed to use
             instance-local names.
+        * `outputs`: Each output is added to the trigger.
     """
     marker = instanceLocs.resolve_filter(res['markerInst'])
 
@@ -241,6 +245,17 @@ def res_resizeable_trigger(vmf: VMF, info: conditions.MapInfo, res: Keyvalues) -
                 trig_ent[child.real_name] = conditions.local_name(
                     inst1, inst1.fixup.substitute(child.value, allow_invert=True)
                 )
+            for out in brush_conf.outputs:
+                trig_ent.add_out(Output(
+                    out.output,
+                    conditions.local_name(inst1, out.target),
+                    out.input,
+                    out.params,
+                    out.delay,
+                    times=out.times,
+                    inst_in=out.inst_in,
+                    inst_out=out.inst_out,
+                ))
 
             if manager is not None and brush_conf.coop_playerteam:
                 trig_ent['spawnflags'] = '1'  # Clients
