@@ -47,8 +47,7 @@ elif app_name == 'error_server':
     import error_server
     func = error_server.main
 else:
-    # Something broke with the earlier checks if the program got here.
-    sys.exit(f'Unable to set application behavior for "{app_name}"!')
+    raise AssertionError(app_name)
 
 from trio_debug import Tracer
 tracer = Tracer() if utils.CODE_DEV_MODE else None
