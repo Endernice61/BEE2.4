@@ -1714,6 +1714,7 @@ async def main(argv: list[str]) -> None:
                 out.comma_sep = False
         # Set this so VRAD can know.
         vmf.spawn['BEE2_is_preview'] = info.is_preview
+        vmf.spawn['BEE2_game_mode'] = info.game_mode.value
         # Ensure VRAD knows that the map is PeTI, it can't figure that out
         # from parameters.
         vmf.spawn['BEE2_is_peti'] = True
