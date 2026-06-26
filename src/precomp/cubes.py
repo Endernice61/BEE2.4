@@ -1423,6 +1423,14 @@ def link_cubes(vmf: VMF, info: conditions.MapInfo) -> None:
         # Otherwise, both cases fail - the cube is dropperless.
         PAIRS.append(CubePair(cube_type, cube=cube))
 
+    # Check for droppers with unbound timers.
+    for timer, (dropper, drop_type) in dropper_timer.items():
+        if not used_droppers[dropper]:
+            raise user_errors.UserError(
+                user_errors.TOK_CUBE_TIMERS_INVALID_DROPVAL.format(timer=timer),
+                voxels=[Vec.from_str(dropper['origin'])],
+            ) from None
+
     # Now cubes are done, loop through the remaining droppers and assign
     # Valve cube types to those.
     for dropper, is_used in used_droppers.items():
