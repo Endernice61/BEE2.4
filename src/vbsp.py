@@ -1718,6 +1718,7 @@ async def main(argv: list[str]) -> None:
         # Ensure VRAD knows that the map is PeTI, it can't figure that out
         # from parameters.
         vmf.spawn['BEE2_is_peti'] = True
+        vmf.spawn['BEE2_is_error'] = False
 
         # Save and run VBSP. If this leaks, this will raise UserError, and we'll compile again.
         save(vmf, new_path)
