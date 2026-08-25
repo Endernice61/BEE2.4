@@ -29,6 +29,7 @@ closure.
 """
 from __future__ import annotations
 
+from typing_extensions import Sentinel
 from typing import Protocol, Any, Final, overload, cast, get_type_hints, ClassVar
 from collections.abc import Callable, Iterable, Mapping, MutableMapping
 from collections import defaultdict
@@ -155,6 +156,7 @@ PETI_INST_ANGLE: Final[Mapping[FrozenVec, FrozenAngle]] = {
     FrozenVec.y_pos: FrozenAngle(0, 180, 90),
     FrozenVec.x_neg: FrozenAngle(0, 270, 90),
 }
+NO_ANNOTATION = Sentinel('NO_ANNOTATION')
 
 
 class NextInstance(Exception):
@@ -402,7 +404,7 @@ def annotation_caller[Res](
     # Since we don't care about the return value, temporarily remove it so that it isn't parsed.
     ann_dict = getattr(func, '__annotations__', None)
     if ann_dict is not None:
-        return_val = ann_dict.pop('return', allowed_kinds)  # Sentinel
+        return_val = ann_dict.pop('return', NO_ANNOTATION)
     else:
         return_val = None
     try:
@@ -415,7 +417,7 @@ def annotation_caller[Res](
         )
         sys.exit(1)  # Suppress duplicate exception capture.
     finally:
-        if ann_dict is not None and return_val is not allowed_kinds:
+        if ann_dict is not None and return_val is not NO_ANNOTATION:
             ann_dict['return'] = return_val
 
     ann_order: list[type] = []
@@ -707,6 +709,7 @@ def make_result(
         """Create the result when the function is supplied."""
         # Legacy setup func support.
         func: Callable[..., Callable[[Entity], object] | object]
+        setup_func: Callable[..., Any] | None
         try:
             setup_func = RESULT_SETUP.pop(orig_name.casefold())
         except KeyError:
@@ -714,7 +717,6 @@ def make_result(
             setup_func = None
         else:
             # Combine the legacy functions into one using a closure.
-            assert setup_func is not None
             func = conv_setup_pair(setup_func, result_func)
 
         wrapper: CondCall[object] = CondCall(

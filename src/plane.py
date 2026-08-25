@@ -2,6 +2,7 @@
 
 """
 from __future__ import annotations
+from typing_extensions import Sentinel
 from typing import Any, Final, overload, ClassVar
 
 from collections.abc import (
@@ -14,8 +15,8 @@ import attrs
 
 __all__ = ['PlaneKey', 'PlaneGrid']
 
-# Sentinel object for empty slots and parameter defaults. TODO use PEP 661
-_UNSET: Any = type('_UnsetType', (), {'__repr__': lambda s: 'UNSET'})()
+# Sentinel object for empty slots and parameter defaults.
+_UNSET = Sentinel("_UNSET", repr="UNSET")
 # Size of each plane grid cell.
 CELL_SIZE = 8
 CELL_SIZE_SQR = CELL_SIZE ** 2
@@ -107,10 +108,10 @@ class PlaneKey:
 
 class Cell[ValT]:
     """Stores a CELL_SIZE x CELL_SIZE grid of values."""
-    array: list[ValT]
+    array: list[ValT | _UNSET]
     count: int
 
-    def __init__(self, count: int, data: list[ValT]) -> None:
+    def __init__(self, count: int, data: list[ValT | _UNSET]) -> None:
         self.array = data
         self.count = count
 
@@ -158,12 +159,13 @@ class PlaneGrid[ValT](MutableMapping[tuple[int, int], ValT]):
     We store items in CELL_SIZE^2 arrays.
     """
     _cells: dict[tuple[int, int], Cell[ValT] | SingleCell[ValT]]
+    default: ValT | _UNSET
 
     def __init__(
         self,
         contents: Mapping[tuple[int, int], ValT] | Iterable[tuple[tuple[int, int], ValT]] = (),
         *,
-        default: ValT = _UNSET,
+        default: ValT | _UNSET = _UNSET,
     ) -> None:
         """Initalises the plane with the provided values."""
         # Track the minimum/maximum position found
@@ -280,7 +282,7 @@ class PlaneGrid[ValT](MutableMapping[tuple[int, int], ValT]):
     @overload
     def get(self, key: tuple[float, float], /) -> ValT | None: ...
     @overload
-    def get[DefaultT](self, key: tuple[float, float], default: ValT | DefaultT, /) -> ValT | DefaultT: ...
+    def get[DefaultT](self, key: tuple[float, float], default: ValT | DefaultT | _UNSET, /) -> ValT | DefaultT: ...
 
     def get[DefaultT](self, pos: tuple[float, float], default: DefaultT | None = None) -> DefaultT | ValT | None:
         """Return the value at a given position, or a default if not present."""
@@ -416,6 +418,8 @@ class PlaneGrid[ValT](MutableMapping[tuple[int, int], ValT]):
                 del self._cells[pos]
             elif isinstance(cell, Cell) and cell.count == CELL_SIZE_SQR:
                 first = cell.array[0]
+                if first is _UNSET:
+                    continue
                 if all(value == first for value in cell.array):
                     self._cells[pos] = SingleCell(first)
 
