@@ -832,14 +832,14 @@ class LogWindow:
     def handle(self, msg: ARGS_SEND_LOGGING) -> None:
         """Handle messages from the main app."""
         match msg:
-            case ['log', str() as level, str() as message]:
+            case ['log', level, message]:
                 self.log(level, message)
-            case ['visible', bool() as visible]:
+            case ['visible', visible]:
                 if visible:
                     self.win.deiconify()
                 else:
                     self.win.withdraw()
-            case ['level', str() as level]:
+            case ['level', level]:
                 self.level_selector.current(BOX_LEVELS.index(level))
             case _:
                 raise ValueError(f'Bad command: {msg!r}!')

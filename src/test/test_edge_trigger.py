@@ -8,6 +8,14 @@ import pytest
 from async_util import CannotTrigger, EdgeTrigger
 
 
+def ready[*AnyArg](trigger: EdgeTrigger[*AnyArg]) -> bool:
+    """Access the ready event.
+
+    This ensures static analysis doesn't trigger spurious unreachable warnings.
+    """
+    return trigger.ready.value
+
+
 async def test_basic_operation() -> None:
     """Test the full sequence."""
     trigger = EdgeTrigger[int, int]()
@@ -29,7 +37,7 @@ async def test_basic_operation() -> None:
         async with seq(2):
             state = 'wait'
         result = await trigger.wait()
-        assert not trigger.ready.value
+        assert not ready(trigger)
         assert_type(result, tuple[int, int])
         assert result == (4, 2)
         assert state == 'trigger'
@@ -40,13 +48,13 @@ async def test_basic_operation() -> None:
         nonlocal state
         async with seq(1):
             assert state == 'pre'
-            assert not trigger.ready.value
+            assert not ready(trigger)
             with pytest.raises(CannotTrigger):
                 trigger.trigger(1, 2)  # Can't trigger yet.
 
         async with seq(3):
             assert state == 'wait'
-            assert trigger.ready.value
+            assert ready(trigger)
         state = 'trigger'
         trigger.trigger(3, 5)
         trigger.trigger(4, 2)  # Last result wins.

@@ -185,6 +185,6 @@ async def iterval_cancelling[T](value: AsyncValue[T]) -> AsyncGenerator[T]:
 
     async with trio.open_nursery() as nursery:
         nursery.start_soon(wait)
-        yield value.value
+        yield value.value  # ruff: ignore[fallible-context-manager]
         # If we get here, the with block was completed. Wait for change or cancellation.
         await trio.sleep_forever()

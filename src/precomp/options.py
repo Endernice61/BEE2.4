@@ -397,7 +397,7 @@ def get_itemconf[OptionT: OptionType](
             raise TypeError(f'Invalid default type "{type(default).__name__}"!')
 
     assert type(result) is type(default), f'{default!r} -> {result!r}'
-    return result  # type: ignore
+    return result
 
 
 INFO_DUMP_FORMAT = """\

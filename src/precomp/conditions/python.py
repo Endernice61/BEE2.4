@@ -36,7 +36,7 @@ FUNC_GLOBALS = {
     '__builtins__': None,
 }
 
-BANNED_COMPS = {
+BANNED_COMPS: dict[type[object], str] = {
     ast.Is: 'is',
     ast.IsNot: 'is not',
     ast.In: 'in',
@@ -86,8 +86,12 @@ class Checker(ast.NodeVisitor):
         except AttributeError:
             ops = [node.op]  # type: ignore
         for op in ops:
-            if isinstance(op, tuple(BANNED_COMPS)):
-                raise Exception(f"The {BANNED_COMPS[type(op)]} operator is not allowed!")
+            try:
+                name = BANNED_COMPS[type(op)]
+            except KeyError:
+                pass
+            else:
+                raise Exception(f"The {name} operator is not allowed!")
 
         self.visit(node.left)
         for right in node.comparators:

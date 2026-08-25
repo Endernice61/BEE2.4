@@ -627,7 +627,7 @@ class ReadOnlyEntry(ttk.Entry):
         self.tk.call("rename", w, self.orig)
         # Create a new Tcl command whose name is the widget's pathname, and
         # whose action is to dispatch on the operation passed to the widget:
-        self.tk.createcommand(w, self.dispatch)  # type: ignore[no-untyped-call]
+        self.tk.createcommand(w, self.dispatch)
 
     def dispatch(self, operation: str, *args: Any) -> str:
         """Callback from Tcl which runs when the widget is referenced.
@@ -812,10 +812,10 @@ class FileField(ttk.Frame):
             except Exception as exc:
                 LOGGER.warning('Failed to browse for a directory:', exc_info=exc)
                 # Fallback to generic widget.
-                path = self.browser.show()  # type: ignore[no-untyped-call]
+                path = self.browser.show()
         else:
             # show() is untyped.
-            path = self.browser.show()  # type: ignore[no-untyped-call]
+            path = self.browser.show()
 
         if path:
             self.value = path
