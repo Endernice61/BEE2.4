@@ -503,7 +503,15 @@ def set_player_portalgun(vmf: VMF, info: corridor.Info) -> None:
             vscripts='bee2/portal_man.nut',
             origin=ent_pos,
         )
-
+        
+        # Max map size is +-16384, for some reason we can't have a brush bigger than
+        # that in any dimension?
+        whole_map = vmf.make_prism(
+            Vec(-8192, -8192, -8192),
+            Vec(8192, 8192, 8192),
+            mat=consts.Tools.TRIGGER,
+        ).solid
+        
         if info.is_sp:
             vmf.create_ent(
                 classname='weapon_portalgun',
@@ -515,8 +523,9 @@ def set_player_portalgun(vmf: VMF, info: corridor.Info) -> None:
             )
             pgun_script['Template01'] = '__pgun_template'
             pgun_script['spawnflags'] = 2
+            
         else:
-            # In coop we have not need to actually spawn portalguns.
+            # In coop we have not need to actually spawn portalguns. 
             pgun_script['classname'] = 'logic_script'
 
             # For Absolute Fizzler or otherwise, this fizzles portals on a
@@ -535,6 +544,7 @@ def set_player_portalgun(vmf: VMF, info: corridor.Info) -> None:
                 mat=consts.Tools.TRIGGER,
             ).solid)
 
+
         # For removing portalguns from players.
         trig_stripper = vmf.create_ent(
             targetname='__pgun_weapon_strip',
@@ -544,13 +554,6 @@ def set_player_portalgun(vmf: VMF, info: corridor.Info) -> None:
             spawnflags=1,  # Players
             KillWeapons=1,
         )
-        # Max map size is +-16384, for some reason we can't have a brush bigger than
-        # that in any dimension?
-        whole_map = vmf.make_prism(
-            Vec(-8192, -8192, -8192),
-            Vec(8192, 8192, 8192),
-            mat=consts.Tools.TRIGGER,
-        ).solid
 
         trig_stripper.solids = [whole_map]
 
@@ -605,19 +608,19 @@ def set_player_portalgun(vmf: VMF, info: corridor.Info) -> None:
                 '_mark_held_cube()',
             ))
 
-        if info.is_sp:
-            logic_auto.add_out(Output(
-                'OnMapSpawn',
-                '@portalgun',
-                'RunScriptCode',
-                'init({}, {}, {})'.format(
-                    'true' if blue_portal else 'false',
-                    'true' if oran_portal else 'false',
-                    'true' if has_btn_onoff else 'false',
-                ),
-                delay=0.1,
-                only_once=True,
-            ))
+        #Init @portalgun
+        logic_auto.add_out(Output(
+            'OnMapSpawn',
+            '@portalgun',
+            'RunScriptCode',
+            'init({}, {}, {})'.format(
+                'true' if blue_portal else 'false',
+                'true' if oran_portal else 'false',
+                'true' if has_btn_onoff else 'false',
+            ),
+            delay=0.1,
+            only_once=True,
+        ))
 
         # Shuts down various parts when you've reached the exit.
         import precomp.conditions.instances
