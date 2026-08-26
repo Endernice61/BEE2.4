@@ -16,13 +16,15 @@ else:
     # Sourcecode-launch - check first sys arg.
     app_name = sys.argv.pop(1).casefold()
 
-app_name = app_name.removesuffix('_osx').removesuffix('_linux').removesuffix('.exe')
-
 if 'original' in app_name:
-    sys.exit('Original compilers replaced, verify game files in Steam!')
+    sys.exit('Original compilers were replaced! Please verify game files in Steam!')
 
-if app_name not in ('vbsp', 'vrad'):
-    sys.exit(f'Unknown application name "{app_name}"!')
+if not app_name.startswith(('vbsp', 'vrad')):
+    sys.exit(f'Invalid application name: "{app_name}"! Filename must start with "vbsp" or "vrad" to set application behavior.')
+
+# Remove the latter half of the app_name after the initial valid application behavior checks have been done.
+app_name = app_name.split(".")[0]
+app_name = app_name.split("_")[0]
 
 if app_name == 'vrad' and '--errorserver' in sys.argv:
     app_name = 'error_server'
@@ -38,12 +40,12 @@ LOGGER.info('Running "{}", version {}:', app_name, utils.BEE_VERSION)
 if app_name == 'vbsp':
     import vbsp
     func = vbsp.main
-elif app_name == 'error_server':
-    import error_server
-    func = error_server.main
 elif app_name == 'vrad':
     import vrad
     func = vrad.main
+elif app_name == 'error_server':
+    import error_server
+    func = error_server.main
 else:
     raise AssertionError(app_name)
 

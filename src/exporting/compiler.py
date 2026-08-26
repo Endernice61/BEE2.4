@@ -76,13 +76,15 @@ async def is_original_executable(file: trio.Path) -> bool:
     async with f:
         await f.seek(0, io.SEEK_END)
         if await f.tell() < SIZE:
-            return False  # Too small.
-
-        # Read out the last 4096 bytes, and look for the sig in there.
-        await f.seek(-SIZE, io.SEEK_END)
-        end_data = await f.read(SIZE)
+            # Tiny exe, just check the whole thing.
+            await f.seek(0, io.SEEK_SET)
+            data = await f.read()
+        else:
+            # Read out the last 4096 bytes, and look for the sig in there.
+            await f.seek(-SIZE, io.SEEK_END)
+            data = await f.read(SIZE)
         # We also look for BenVlodgi, to catch the BEE 1.06 precompiler.
-        return b'BenVlodgi' not in end_data and b'MEI\014\013\012\013\016' not in end_data
+        return b'BenVlodgi' not in data and b'MEI\014\013\012\013\016' not in data
 
 
 async def terminate_error_server() -> bool:

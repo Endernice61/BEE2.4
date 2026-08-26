@@ -792,10 +792,10 @@ class PropertyWindow:
 
         out: dict[ItemPropKind[Any], str] = {}
         out.update(conf.defaults)  # Keep any extra values, just in case.
-        for (props, factory), group in zip(PROP_GROUPS, self.groups, strict=True):
-            if group is None or not matching_props(item, props):
+        for (props, factory), maybe_group in zip(PROP_GROUPS, self.groups, strict=True):
+            if maybe_group is None or not matching_props(item, props):
                 continue
-            for prop_kind, value in group.get_conf():
+            for prop_kind, value in maybe_group.get_conf():
                 try:
                     prop = item.properties[prop_kind.id.casefold()]
                 except KeyError:

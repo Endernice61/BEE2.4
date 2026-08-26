@@ -175,7 +175,8 @@ class PygletSound(NullSound):
                         _nursery.cancel_scope.cancel('system failure')
                     sounds = NullSound()
                     await trio.sleep(0.1)
-                if (duration := snd.duration) is not None:
+                duration: float | None = snd.duration
+                if duration is not None:
                     await trio.sleep(duration)
                 else:
                     LOGGER.warning('No duration: {}', sound)

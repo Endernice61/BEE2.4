@@ -1417,7 +1417,7 @@ def add_item_indicators(
                     fade_time += timer_delay
                 panel_fixup['$time'] = format_float(fade_time)
                 # This gives the appropriate SetPlaybackRate input for a 30s timer dial.
-                panel_fixup['$playback'] = format_float(30.0 / fade_time) if fade_time != 0.0 else '0'
+                panel_fixup['$playback'] = format_float(30.0 / fade_time) if fade_time > 0 else '0'
                 conn_pairs.append((timer_cmd.output, delay, [
                     Output(
                         '', out.target, out.input,
@@ -1466,7 +1466,7 @@ def add_item_indicators(
 
     if timer_delay is not None:
         panel_fixup['$time'] = format_float(timer_delay)
-        panel_fixup['$playback'] = format_float(30.0 / timer_delay) if timer_delay != 0.0 else '0'
+        panel_fixup['$playback'] = format_float(30.0 / timer_delay) if timer_delay > 0.0 else '0'
 
     if inst_type is PanelSwitchingStyle.CUSTOM:
         needs_toggle = has_ant

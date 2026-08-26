@@ -312,6 +312,11 @@ TOK_CUBE_TIMERS_INVALID_CUBEVAL = TransToken.ui(
     'A dropper should be placed with a matching timer value, to specify the respawn point for this '
     'preplaced cube.'
 )
+TOK_CUBE_TIMERS_INVALID_DROPVAL = TransToken.ui(
+    'The specified dropper has a timer value <var>{timer}</var>, which does not match any cube. '
+    'A cube should be placed with a matching timer value, which will become a preplaced cube that '
+    'respawns from this dropper.'
+)
 TOK_CUBE_DROPPER_LINKED = TransToken.ui(
     'Dropper above custom cube of type <var>{type}</var> is already linked! Custom cubes convert'
     'droppers above them into their type, to allow having droppers.',

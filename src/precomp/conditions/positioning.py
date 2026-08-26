@@ -585,21 +585,8 @@ def res_calc_opposite_wall_dist(inst: Entity, res: Keyvalues) -> None:
     inst.fixup[result_var] = (origin - opposing_pos).mag() + dist_off
 
 
-@conditions.make_result('RotateInst', 'RotateInstance')
-def res_rotate_inst(inst: Entity, res: Keyvalues) -> None:
-    """Rotate the instance around an axis.
-
-    If `axis` is specified, it should be a normal vector and the instance will
-    be rotated `angle` degrees around it.
-    Otherwise, `angle` is a pitch-yaw-roll angle which is applied.
-    `around` can be a point (local, pre-rotation) which is used as the origin.
-
-    As a convenience, the `ramp_open_XX_deg` animations are also permitted in axis mode.
-
-    Tip: If you want to match angled panels, rotate with an axis of `0 -1 0`
-    and an around value of `0 -64 -64`.
-    """
-    angles = Matrix.from_angstr(inst['angles'])
+def calc_rotation(inst: Entity, res: Keyvalues) -> Matrix:
+    """Common calculation for RotateInstance and CalcRotation."""
     angle_str = inst.fixup.substitute(res['angle'])
     if 'axis' in res:
         try:
@@ -615,6 +602,26 @@ def res_rotate_inst(inst: Entity, res: Keyvalues) -> None:
     else:
         orient = Matrix.from_angstr(angle_str)
 
+    return orient
+
+
+@conditions.make_result('RotateInst', 'RotateInstance')
+def res_rotate_inst(inst: Entity, res: Keyvalues) -> None:
+    """Rotate the instance around an axis.
+
+    If `axis` is specified, it should be a normal vector and the instance will
+    be rotated `angle` degrees around it.
+    Otherwise, `angle` is a pitch-yaw-roll angle which is applied.
+    `around` can be a point (local, pre-rotation) which is used as the origin.
+
+    As a convenience, the `ramp_open_XX_deg` animations are also permitted in axis mode.
+
+    Tip: If you want to match angled panels, rotate with an axis of `0 -1 0`
+    and an around value of `0 -64 -64`.
+    """
+    angles = Matrix.from_angstr(inst['angles'])
+    orient = calc_rotation(inst, res)
+
     try:
         offset = Vec.from_str(inst.fixup.substitute(res['around']))
     except LookupError:
@@ -624,3 +631,29 @@ def res_rotate_inst(inst: Entity, res: Keyvalues) -> None:
         inst['origin'] = origin + (-offset @ orient + offset) @ angles
 
     inst['angles'] = orient @ angles
+
+
+@conditions.make_result('CalcRotation')
+def res_calc_rotation(inst: Entity, res: Keyvalues) -> None:
+    """Calculate an angles rotation.
+
+    Options:
+    * `angle`: The amount to rotate. If `axis` is specified, this is a float, or the `ramp_open_XX_deg` animations.
+      Otherwise, this is a pitch-yaw-roll angle.
+    * `axis`: If specified, it should be a normal vector to rotate around.
+    * `global`: If true, this is not rotated by the instance.
+    * `outAxis`: This should be a value like `x`, `-y`, `+z`. If set, the output is the normal vector of the rotation.
+    * `resultVar`: The variable which the rotation is assigned to.
+    """
+    angles = Matrix.from_angstr(inst['angles'])
+    orient = calc_rotation(inst, res)
+    if not res.bool('global'):
+        orient @= angles
+    if out_axis := res['outaxis', '']:
+        try:
+            out_vec = conditions.DIRECTIONS[out_axis]
+        except KeyError:
+            raise ValueError(f'Invalid out axis "{out_axis}"!') from None
+        inst.fixup[res['resultVar']] = out_vec @ orient
+    else:
+        inst.fixup[res['resultVar']] = orient.to_angle()

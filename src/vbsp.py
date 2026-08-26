@@ -503,7 +503,15 @@ def set_player_portalgun(vmf: VMF, info: corridor.Info) -> None:
             vscripts='bee2/portal_man.nut',
             origin=ent_pos,
         )
-
+        
+        # Max map size is +-16384, for some reason we can't have a brush bigger than
+        # that in any dimension?
+        whole_map = vmf.make_prism(
+            Vec(-8192, -8192, -8192),
+            Vec(8192, 8192, 8192),
+            mat=consts.Tools.TRIGGER,
+        ).solid
+        
         if info.is_sp:
             vmf.create_ent(
                 classname='weapon_portalgun',
@@ -546,13 +554,6 @@ def set_player_portalgun(vmf: VMF, info: corridor.Info) -> None:
             spawnflags=1,  # Players
             KillWeapons=1,
         )
-        # Max map size is +-16384, for some reason we can't have a brush bigger than
-        # that in any dimension?
-        whole_map = vmf.make_prism(
-            Vec(-8192, -8192, -8192),
-            Vec(8192, 8192, 8192),
-            mat=consts.Tools.TRIGGER,
-        ).solid
 
         trig_stripper.solids = [whole_map]
 
@@ -1716,9 +1717,11 @@ async def main(argv: list[str]) -> None:
                 out.comma_sep = False
         # Set this so VRAD can know.
         vmf.spawn['BEE2_is_preview'] = info.is_preview
+        vmf.spawn['BEE2_game_mode'] = info.game_mode.value
         # Ensure VRAD knows that the map is PeTI, it can't figure that out
         # from parameters.
         vmf.spawn['BEE2_is_peti'] = True
+        vmf.spawn['BEE2_is_error'] = False
 
         # Save and run VBSP. If this leaks, this will raise UserError, and we'll compile again.
         save(vmf, new_path)

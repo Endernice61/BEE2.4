@@ -1566,13 +1566,13 @@ def find_tile(
     norm_axis = normal.axis()
     u_axis, v_axis = Vec.INV_AXIS[norm_axis]
 
-    grid_pos = Vec.with_axes(
+    grid_pos: Vec = Vec.with_axes(
         norm_axis, origin - 64 * normal,
         u_axis, origin[u_axis] // 128 * 128 + 64,
         v_axis, origin[v_axis] // 128 * 128 + 64,
     )
-    grid_pos: Vec = round(grid_pos, 6)
-    normal: Vec = Vec(round(normal, 6))
+    grid_pos = round(grid_pos, 6)
+    grid_normal = Vec(round(normal, 6))
     # grid_pos = round_grid(origin - normal)
 
     uv_pos = round(origin - grid_pos + 64 - 16, 6)
@@ -1583,9 +1583,9 @@ def find_tile(
         raise KeyError(f'Bad tile position: {origin} with orient {normal} had a UV of {u}, {v}')
 
     if force:
-        tile = TileDef.ensure(grid_pos, normal)
+        tile = TileDef.ensure(grid_pos, grid_normal)
     else:
-        tile = TILES[grid_pos.as_tuple(), normal.as_tuple()]
+        tile = TILES[grid_pos.as_tuple(), grid_normal.as_tuple()]
         # except KeyError: raise
 
     return tile, int(u), int(v)
@@ -1837,7 +1837,7 @@ def analyse_map(vmf_file: VMF, side_to_ant_seg: dict[int, list[antlines.Segment]
             continue
 
         tile_size = dim.other_axes(norm.axis())
-        if tile_size == (128, 128):
+        if tile_size == (128.0, 128.0):
             # 128x128x4 block..
             tiledefs_from_large_tile(face_to_tile, brush, grid_pos, norm)
         else:

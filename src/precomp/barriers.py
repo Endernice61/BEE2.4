@@ -359,7 +359,7 @@ class BarrierType:
         if 'error_tex' in kv:
             error_tex = kv['error_tex'].casefold()
             if error_tex in user_errors.TEX_SET:
-                error_disp = error_tex  # type: ignore
+                error_disp = error_tex
 
         if 'floorbeam' in kv:
             floorbeam = FloorbeamConf.parse(barrier_id, kv.find_key('floorbeam'))
@@ -1355,7 +1355,7 @@ def find_plane_groups(grid: PlaneGrid[Barrier]) -> Iterator[tuple[Barrier, Plane
 
 def calc_borders(plane: PlaneGrid[Barrier]) -> PlaneGrid[Border]:
     """Calculate which borders are required for each section of this plane."""
-    borders = PlaneGrid(default=Border.NONE)
+    borders: PlaneGrid[Border] = PlaneGrid(default=Border.NONE)
     for (x, y) in plane:
         border = Border.NONE
         if north := (x, y + 1) not in plane:
