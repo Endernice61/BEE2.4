@@ -392,6 +392,7 @@ class Fizzler:
     base_inst: Entity
     up_axis: Vec  # Pointing toward the 'up' side of the field.
     emitters: list[tuple[Vec, Vec]]  # Pairs of left, right positions.
+    original_origin: Vec #Where the base instance was originally placed
 
     # If the emitters are a custom layout
     has_cust_position: bool = False
@@ -501,7 +502,7 @@ class Fizzler:
                     normal.as_tuple()
                 ]
             #Fizzler is offset off of a wall, let it go through without doing anything
-            except:
+            except KeyError:
                 return
 
             # Reversed?
@@ -1155,7 +1156,6 @@ def parse_map(vmf: VMF, info: conditions.MapInfo) -> None:
             fizz_models[name].append(inst)
             inst.remove()
         elif 'fizzler_base' in traits:
-            inst['original_origin'] = inst['origin']
             fizz_bases[name] = inst
         else:
             LOGGER.warning('Fizzler "{}" has non-base, non-model instance?', name)
@@ -1224,6 +1224,7 @@ def parse_map(vmf: VMF, info: conditions.MapInfo) -> None:
             base_inst=base_inst,
             up_axis=up_axis,
             emitters=emitters,
+            original_origin=Vec.from_str(base_inst['origin'])
         )
 
     # Delete all the old brushes associated with fizzlers
@@ -1304,7 +1305,7 @@ def generate_fizzlers(vmf: VMF, coll: Collisions) -> None:
         fizz_name = fizz.base_inst['targetname']
         fizz_type = fizz.fizz_type
         
-        base_offset = Vec.from_str(fizz.base_inst['origin'])-Vec.from_str(fizz.base_inst['original_origin'])
+        base_offset = Vec.from_str(fizz.base_inst['origin'])-fizz.original_origin
         
         for i, emitter in enumerate(fizz.emitters):
             fizz.emitters[i] = [j+base_offset for j in emitter]
