@@ -405,6 +405,27 @@ class Fizzler:
     tag_on_pos: bool = False
     tag_on_neg: bool = False
 
+    def __init__(
+        self: Fizzler,
+        fizz_type: FizzlerType,
+        base_inst: Entity,
+        up_axis: Vec,
+        emitters: list[tuple[Vec, Vec]],
+        has_cust_position: bool = False,
+        embedded: bool = True,
+        tag_on_pos: bool = False,
+        tag_on_neg: bool = False
+    ) -> None:
+        self.fizz_type = fizz_type
+        self.base_inst = base_inst
+        self.original_origin = Vec.from_str(base_inst['origin'])
+        self.up_axis = up_axis
+        self.emitters = emitters
+        self.has_cust_position = has_cust_position
+        self.embedded = embedded
+        self.tag_on_pos = tag_on_pos
+        self.tag_on_neg = tag_on_neg
+
     def forward(self) -> Vec:
         """The axis moving from one side to another."""
         return (self.emitters[0][1] - self.emitters[0][0]).norm()
@@ -1224,7 +1245,6 @@ def parse_map(vmf: VMF, info: conditions.MapInfo) -> None:
             base_inst=base_inst,
             up_axis=up_axis,
             emitters=emitters,
-            original_origin=Vec.from_str(base_inst['origin'])
         )
 
     # Delete all the old brushes associated with fizzlers
