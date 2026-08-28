@@ -495,10 +495,14 @@ class Fizzler:
             if not to_nodraw:
                 return
 
-            tile = tiling.TILES[
-                (origin - 64 * normal).as_tuple(),
-                normal.as_tuple()
-            ]
+            try:
+                tile = tiling.TILES[
+                    (origin - 64 * normal).as_tuple(),
+                    normal.as_tuple()
+                ]
+            #Fizzler is offset off of a wall, let it go through without doing anything
+            except:
+                return
 
             # Reversed?
             if up_axis == u_axis:
@@ -1151,6 +1155,7 @@ def parse_map(vmf: VMF, info: conditions.MapInfo) -> None:
             fizz_models[name].append(inst)
             inst.remove()
         elif 'fizzler_base' in traits:
+            inst['original_origin'] = inst['origin']
             fizz_bases[name] = inst
         else:
             LOGGER.warning('Fizzler "{}" has non-base, non-model instance?', name)
@@ -1298,6 +1303,13 @@ def generate_fizzlers(vmf: VMF, coll: Collisions) -> None:
 
         fizz_name = fizz.base_inst['targetname']
         fizz_type = fizz.fizz_type
+        
+        base_offset = Vec.from_str(fizz.base_inst['origin'])-Vec.from_str(fizz.base_inst['original_origin'])
+        
+        for i, emitter in enumerate(fizz.emitters):
+            emitter = [j+base_offset for j in emitter]
+            fizz.emitters[i] = emitter
+            
 
         # Static versions are only used for fizzlers which start on.
         # Permanently-off fizzlers are kinda useless, so we don't need
