@@ -392,7 +392,9 @@ class Fizzler:
     base_inst: Entity
     up_axis: Vec  # Pointing toward the 'up' side of the field.
     emitters: list[tuple[Vec, Vec]]  # Pairs of left, right positions.
-    original_origin: Vec #Where the base instance was originally placed
+    # Where the base instance was originally placed, allows propagating
+    # offsetting of the base instance to emitters.
+    original_origin: Vec = attrs.field(init=False)
 
     # If the emitters are a custom layout
     has_cust_position: bool = False
@@ -405,26 +407,8 @@ class Fizzler:
     tag_on_pos: bool = False
     tag_on_neg: bool = False
 
-    def __init__(
-        self: Fizzler,
-        fizz_type: FizzlerType,
-        base_inst: Entity,
-        up_axis: Vec,
-        emitters: list[tuple[Vec, Vec]],
-        has_cust_position: bool = False,
-        embedded: bool = True,
-        tag_on_pos: bool = False,
-        tag_on_neg: bool = False
-    ) -> None:
-        self.fizz_type = fizz_type
-        self.base_inst = base_inst
-        self.original_origin = Vec.from_str(base_inst['origin'])
-        self.up_axis = up_axis
-        self.emitters = emitters
-        self.has_cust_position = has_cust_position
-        self.embedded = embedded
-        self.tag_on_pos = tag_on_pos
-        self.tag_on_neg = tag_on_neg
+    def __attrs_post_init__(self) -> None:
+        self.original_origin = Vec.from_str(self.base_inst['origin'])
 
     def forward(self) -> Vec:
         """The axis moving from one side to another."""
@@ -1324,12 +1308,15 @@ def generate_fizzlers(vmf: VMF, coll: Collisions) -> None:
 
         fizz_name = fizz.base_inst['targetname']
         fizz_type = fizz.fizz_type
-        
-        base_offset = Vec.from_str(fizz.base_inst['origin'])-fizz.original_origin
-        
-        for i, emitter in enumerate(fizz.emitters):
-            fizz.emitters[i] = [j+base_offset for j in emitter]
-            
+
+        # If the base instance was offset from the original location, propagate
+        # that to all the emitters if ReshapeFizzler wasn't used.
+        base_offset = Vec.from_str(fizz.base_inst['origin']) - fizz.original_origin
+        if base_offset and not fizz.has_cust_position:
+            fizz.emitters = [
+                (seg_min + base_offset, seg_max + base_offset)
+                for seg_min, seg_max in fizz.emitters
+            ]
 
         # Static versions are only used for fizzlers which start on.
         # Permanently-off fizzlers are kinda useless, so we don't need
