@@ -1307,8 +1307,7 @@ def generate_fizzlers(vmf: VMF, coll: Collisions) -> None:
         base_offset = Vec.from_str(fizz.base_inst['origin'])-Vec.from_str(fizz.base_inst['original_origin'])
         
         for i, emitter in enumerate(fizz.emitters):
-            emitter = [j+base_offset for j in emitter]
-            fizz.emitters[i] = emitter
+            fizz.emitters[i] = [j+base_offset for j in emitter]
             
 
         # Static versions are only used for fizzlers which start on.
