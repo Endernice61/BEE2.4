@@ -392,6 +392,9 @@ class Fizzler:
     base_inst: Entity
     up_axis: Vec  # Pointing toward the 'up' side of the field.
     emitters: list[tuple[Vec, Vec]]  # Pairs of left, right positions.
+    # Where the base instance was originally placed, allows propagating
+    # offsetting of the base instance to emitters.
+    original_origin: Vec = attrs.field(init=False)
 
     # If the emitters are a custom layout
     has_cust_position: bool = False
@@ -403,6 +406,9 @@ class Fizzler:
     # We generate the triggers elsewhere.
     tag_on_pos: bool = False
     tag_on_neg: bool = False
+
+    def __attrs_post_init__(self) -> None:
+        self.original_origin = Vec.from_str(self.base_inst['origin'])
 
     def forward(self) -> Vec:
         """The axis moving from one side to another."""
@@ -495,10 +501,14 @@ class Fizzler:
             if not to_nodraw:
                 return
 
-            tile = tiling.TILES[
-                (origin - 64 * normal).as_tuple(),
-                normal.as_tuple()
-            ]
+            try:
+                tile = tiling.TILES[
+                    (origin - 64 * normal).as_tuple(),
+                    normal.as_tuple()
+                ]
+            #Fizzler is offset off of a wall, let it go through without doing anything
+            except KeyError:
+                return
 
             # Reversed?
             if up_axis == u_axis:
@@ -1298,6 +1308,15 @@ def generate_fizzlers(vmf: VMF, coll: Collisions) -> None:
 
         fizz_name = fizz.base_inst['targetname']
         fizz_type = fizz.fizz_type
+
+        # If the base instance was offset from the original location, propagate
+        # that to all the emitters if ReshapeFizzler wasn't used.
+        base_offset = Vec.from_str(fizz.base_inst['origin']) - fizz.original_origin
+        if base_offset and not fizz.has_cust_position:
+            fizz.emitters = [
+                (seg_min + base_offset, seg_max + base_offset)
+                for seg_min, seg_max in fizz.emitters
+            ]
 
         # Static versions are only used for fizzlers which start on.
         # Permanently-off fizzlers are kinda useless, so we don't need
