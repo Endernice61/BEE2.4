@@ -152,13 +152,10 @@ def res_piston_plat(vmf: VMF, res: Keyvalues) -> conditions.ResultCallable:
 
         init_script = f'SPAWN_UP <- {"true" if start_up else "false"}; DN_FIZZ_NAME <- `{dn_fizz_name}`; SPEED_UP <- {speed}; SPEED_DOWN <- {down_speed}'
 
-        if snd_start and snd_stop:
-            packing.pack_files(vmf, snd_start, snd_stop, file_type='sound')
-            init_script += f'; START_SND <- `{snd_start}`; STOP_SND <- `{snd_stop}`'
-        elif snd_start:
+        if snd_start:
             packing.pack_files(vmf, snd_start, file_type='sound')
             init_script += f'; START_SND <- `{snd_start}`'
-        elif snd_stop:
+        if snd_stop:
             packing.pack_files(vmf, snd_stop, file_type='sound')
             init_script += f'; STOP_SND <- `{snd_stop}`'
 
