@@ -104,14 +104,22 @@ def res_piston_plat(vmf: VMF, res: Keyvalues) -> conditions.ResultCallable:
             raise ValueError(f'No "{name}" specified!')
         inst_filenames[name] = resolve_single(lookup, error=True)
 
+    top = 4
+    for prefix, idx in [('static_',4),('dynamic_',5),('fullstatic_',5)]:
+        while (idx <= 24):
+            if ((name := prefix+str(idx)) not in res):
+                break
+            lookup = res[name]
+            inst_filenames[name] = resolve_single(lookup, error=True) if lookup != '' else ''
+            top = max(top,idx)
+            idx += 1
+
     template = template_brush.get_template(res['template'])
 
     visgroup_names = [
-        LazyValue.parse(res['visgroup_1', 'pist_1']),
-        LazyValue.parse(res['visgroup_2', 'pist_2']),
-        LazyValue.parse(res['visgroup_3', 'pist_3']),
-        LazyValue.parse(res['visgroup_top', 'pist_4']),
-    ]
+        LazyValue.parse(res[f'visgroup_{i}', f'pist_{i}'])
+        for i in range(1,top) #
+    ] + [LazyValue.parse(res['visgroup_top', f'pist_{top}'])]
 
     dn_fizz_name = res['dn_fizz_name', '']
     automatic_var = res['auto_var', '']
@@ -142,6 +150,8 @@ def res_piston_plat(vmf: VMF, res: Keyvalues) -> conditions.ResultCallable:
             else:
                 # It's static, we just make that and exit.
                 position = max_pos if start_up else min_pos
+                if ('fullstatic_'+str(position) not in inst_filenames):
+                    raise IndexError(f'No "fullstatic_{position}" specified for extended piston!')
                 inst.fixup[FixupVars.PIST_BTM] = position
                 inst.fixup[FixupVars.PIST_TOP] = position
                 static_inst = inst.copy()
@@ -151,6 +161,9 @@ def res_piston_plat(vmf: VMF, res: Keyvalues) -> conditions.ResultCallable:
                 return
 
         init_script = f'SPAWN_UP <- {"true" if start_up else "false"}; DN_FIZZ_NAME <- `{dn_fizz_name}`; SPEED_UP <- {speed}; SPEED_DOWN <- {down_speed}'
+
+        if (max_pos > 4):
+            init_script += f'; TOP <- {max_pos}'
 
         if snd_start:
             packing.pack_files(vmf, snd_start, file_type='sound')
@@ -189,17 +202,21 @@ def res_piston_plat(vmf: VMF, res: Keyvalues) -> conditions.ResultCallable:
 
         static_ent = vmf.create_ent('func_brush', origin=origin)
 
-        for pist_ind in [1, 2, 3, 4]:
+        for pist_ind in range(1,top+1): #
             pist_ent = inst.copy()
             vmf.add_ent(pist_ent)
 
             if pist_ind <= min_pos:
                 # It's below the lowest position, so it can be static.
+                if ('static_'+str(pist_ind) not in inst_filenames):
+                    raise IndexError(f'No "static_{position}" specified for extended piston!')
                 pist_ent['file'] = fname = inst_filenames['static_' + str(pist_ind)]
                 pist_ent['origin'] = brush_pos = origin + pist_ind * off
                 temp_targ = static_ent
             else:
                 # It's a moving component.
+                if ('dynamic_'+str(pist_ind) not in inst_filenames):
+                    raise IndexError(f'No "dynamic_{position}" specified for extended piston!')
                 pist_ent['file'] = fname = inst_filenames['dynamic_' + str(pist_ind)]
                 if pist_ind > max_pos:
                     # It's 'after' the highest position, so it never extends.
